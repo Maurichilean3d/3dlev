@@ -1,9 +1,10 @@
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MR Studio: Direct Sculpt</title>
+    <title>MR Studio: Welder Edition</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; font-family: sans-serif; color: #fff; }
         #overlay {
@@ -17,14 +18,15 @@
             box-shadow: 0 0 20px rgba(0,136,255,0.5);
         }
         .instr { margin-top: 20px; color: #aaa; font-size: 14px; text-align: center; }
+        .status { margin-top: 10px; color: #0f0; font-weight: bold; }
     </style>
 </head>
 <body>
 
 <div id="overlay">
-    <h1>MR STUDIO: DIRECT SCULPT</h1>
-    <p>Toca el punto y aprieta el GRIP (Lateral) para moverlo.</p>
-    <button id="btn-start">INICIAR</button>
+    <h1>MR STUDIO: SOLDADURA</h1>
+    <p>Activa 'AUTO-WELD' para unir vértices al acercarlos.</p>
+    <button id="btn-start">INICIAR SISTEMA</button>
 </div>
 
 <script type="importmap">
@@ -49,11 +51,12 @@ let uiGroup;
 const uiButtons = []; 
 const objects = []; 
 
-// Selector Táctil
+// Variables Interacción
 let selectorSphere;
-const SELECTOR_RADIUS = 0.05; 
+const SELECTOR_RADIUS = 0.05; // Radio de toque
+const WELD_THRESHOLD = 0.03;  // Distancia para soldar (3cm)
 
-// Variables reutilizables (Memoria)
+// Variables reutilizables
 const _tempVecA = new THREE.Vector3();
 const _tempVecB = new THREE.Vector3();
 const _ray = new THREE.Raycaster();
@@ -65,9 +68,13 @@ const STATE = {
     selected: null,      
     mainMesh: null,      
     mode: 'OBJECT',      
-    grabbedElement: null, // Lo que tenemos agarrado (Objeto o Vértice)
+    grabbedElement: null, 
     menuAttached: false,
-    closestVertex: null
+    closestVertex: null,
+    
+    // NUEVO: Estado de soldadura
+    autoWeld: false,      // Checkbox activado
+    vertexGroups: new Map() // Mapa de uniones: vertexIndex -> groupID
 };
 
 init();
@@ -120,11 +127,11 @@ function setupControllers() {
         if (e.data.handedness === 'right') {
             ctrlRight = e.target;
             
-            // ESFERA ROJA (Puntero Táctil)
+            // ESFERA SELECTORA
             const geo = new THREE.SphereGeometry(0.008, 16, 16); 
             const mat = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.6 });
             selectorSphere = new THREE.Mesh(geo, mat);
-            selectorSphere.position.set(0, -0.01, -0.04); // Punta del dedo
+            selectorSphere.position.set(0, -0.01, -0.04); 
             ctrlRight.add(selectorSphere);
 
             // Rayo UI
@@ -134,7 +141,6 @@ function setupControllers() {
             );
             ctrlRight.add(line);
 
-            // Eventos
             ctrlRight.addEventListener('selectstart', onTriggerStart); 
             ctrlRight.addEventListener('squeezestart', onGripStart);   
             ctrlRight.addEventListener('squeezeend', onGripEnd);       
@@ -145,46 +151,58 @@ function setupControllers() {
     scene.add(c0);
     scene.add(c1);
 
-    // IZQUIERDA (Menu)
+    // IZQUIERDA
     gripLeft = renderer.xr.getControllerGrip(0);
     gripLeft.add(modelFactory.createControllerModel(gripLeft));
     scene.add(gripLeft);
     
-    // DERECHA (Visual)
     const gripRight = renderer.xr.getControllerGrip(1);
     gripRight.add(modelFactory.createControllerModel(gripRight));
     scene.add(gripRight);
 }
 
 // ==========================================
-// 3. UI
+// 3. UI MEJORADA (CON SOLDADURA)
 // ==========================================
 function createWristUI() {
     uiGroup = new THREE.Group();
     uiGroup.position.set(0.05, 0.05, -0.05);
     uiGroup.rotation.set(-Math.PI/2, 0, Math.PI/2);
 
-    const bg = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.22), new THREE.MeshBasicMaterial({ color: 0x000000, opacity: 0.8, transparent: true }));
+    const bg = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 0.24), new THREE.MeshBasicMaterial({ color: 0x000000, opacity: 0.85, transparent: true }));
     uiGroup.add(bg);
 
-    createBtn('CUBO', 0x0055ff, -0.04, 0.08, () => spawn('box'));
-    createBtn('ESFERA', 0x00aa55, 0.04, 0.08, () => spawn('sphere'));
+    // Fila 1: Creación
+    createBtn('CUBO', 0x0055ff, -0.05, 0.08, () => spawn('box'));
+    createBtn('ESFERA', 0x00aa55, 0.05, 0.08, () => spawn('sphere'));
     
-    // Solo botón de modo, ya no necesitamos gizmos en la UI
-    createBtn('OBJ / VERT', 0xaa00aa, 0.0, 0.02, toggleMode);
-    createBtn('BORRAR', 0xff0000, 0, -0.06, deleteSelected);
+    // Fila 2: Modos
+    createBtn('OBJ / VERT', 0xaa00aa, -0.05, 0.02, toggleMode);
+    createBtn('BORRAR', 0xff0000, 0.05, 0.02, deleteSelected);
+
+    // Fila 3: SOLDADURA (Nuevo)
+    createBtn('AUTO-WELD', 0xff8800, -0.05, -0.04, toggleAutoWeld);
+    createBtn('SEPARAR', 0x555555, 0.05, -0.04, unweldSelected);
+    
+    // Indicador Estado Weld
+    const indGeo = new THREE.SphereGeometry(0.005);
+    const indMat = new THREE.MeshBasicMaterial({color: 0x333333});
+    const indicator = new THREE.Mesh(indGeo, indMat);
+    indicator.position.set(-0.08, -0.04, 0.01);
+    indicator.name = "weldIndicator";
+    uiGroup.add(indicator);
 }
 
 function createBtn(text, color, x, y, cb) {
-    const btn = new THREE.Mesh(new THREE.PlaneGeometry(0.06, 0.04), new THREE.MeshBasicMaterial({ color: color }));
+    const btn = new THREE.Mesh(new THREE.PlaneGeometry(0.08, 0.04), new THREE.MeshBasicMaterial({ color: color }));
     btn.position.set(x, y, 0.01);
     const cvs = document.createElement('canvas'); cvs.width=128; cvs.height=64;
     const ctx = cvs.getContext('2d');
     ctx.fillStyle = '#' + new THREE.Color(color).getHexString(); ctx.fillRect(0,0,128,64);
-    ctx.fillStyle = 'white'; ctx.font = 'bold 24px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillStyle = 'white'; ctx.font = 'bold 20px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText(text, 64, 32);
     const tex = new THREE.CanvasTexture(cvs);
-    const label = new THREE.Mesh(new THREE.PlaneGeometry(0.06, 0.04), new THREE.MeshBasicMaterial({map:tex, transparent:true}));
+    const label = new THREE.Mesh(new THREE.PlaneGeometry(0.08, 0.04), new THREE.MeshBasicMaterial({map:tex, transparent:true}));
     label.position.z = 0.002;
     btn.add(label);
     btn.userData = { isButton: true, action: cb, baseColor: new THREE.Color(color) };
@@ -193,34 +211,29 @@ function createBtn(text, color, x, y, cb) {
 }
 
 // ==========================================
-// 4. LÓGICA DE INTERACCIÓN (AGARRE REAL)
+// 4. LÓGICA DE INTERACCIÓN
 // ==========================================
 
 function onTriggerStart() {
-    // Solo para la UI
     if (STATE.hoveredBtn) {
         STATE.hoveredBtn.userData.action();
         const b = STATE.hoveredBtn;
         b.scale.set(0.9,0.9,1); setTimeout(()=>b.scale.set(1,1,1),100);
-    } 
-    // En modo objeto, el trigger también selecciona
-    else if (STATE.mode === 'OBJECT') {
+    } else if (STATE.mode === 'OBJECT') {
         checkRaycastSelection();
     }
 }
 
 function onGripStart() {
-    // 1. Si tenemos un VÉRTICE CERCANO (Modo Vértice)
+    // 1. Agarrar VÉRTICE (Touch)
     if (STATE.mode === 'VERTEX' && STATE.closestVertex) {
         STATE.grabbedElement = STATE.closestVertex;
-        // Attach al control para moverlo
         ctrlRight.attach(STATE.grabbedElement);
-        // Feedback
-        STATE.grabbedElement.material.color.setHex(0xffffff); // Blanco = Agarrado
+        STATE.grabbedElement.material.color.setHex(0xffffff); // Blanco
         return;
     }
 
-    // 2. Si no, AGARRAR OBJETO SELECCIONADO (Modo Objeto)
+    // 2. Agarrar OBJETO (Seleccionado)
     if (STATE.mode === 'OBJECT' && STATE.selected && !STATE.selected.userData.isVertex) {
         STATE.grabbedElement = STATE.selected;
         ctrlRight.attach(STATE.grabbedElement);
@@ -235,18 +248,23 @@ function onGripEnd() {
             const dot = STATE.grabbedElement;
             const mesh = dot.userData.parentMesh;
             
-            // Volver a pegar el punto al objeto padre
-            mesh.attach(dot); 
+            // Re-attach al mesh
+            mesh.attach(dot);
             
-            // Forzar actualización final
+            // 1. Intentar SOLDAR si está activado
+            if (STATE.autoWeld) {
+                checkForWeld(dot);
+            }
+            
+            // 2. Actualizar geometría (esto mueve también a los soldados)
             updateVertexPosition(dot);
             
-            dot.material.color.setHex(0xffff00); // Volver a amarillo (seleccionado)
+            dot.material.color.setHex(0xffff00); 
         } 
         // B. Soltar OBJETO
         else {
             scene.attach(STATE.grabbedElement);
-            STATE.grabbedElement.material.emissive.setHex(0x000000); // Apagar brillo
+            STATE.grabbedElement.material.emissive.setHex(0x000000);
         }
         
         STATE.grabbedElement = null;
@@ -254,14 +272,13 @@ function onGripEnd() {
 }
 
 function render() {
-    // UI Anclada
     if (!STATE.menuAttached && gripLeft) {
         gripLeft.add(uiGroup);
         STATE.menuAttached = true;
     }
 
     if (ctrlRight) {
-        // A. UI Raycast
+        // UI Raycast
         _mat.identity().extractRotation(ctrlRight.matrixWorld);
         _ray.ray.origin.setFromMatrixPosition(ctrlRight.matrixWorld);
         _ray.ray.direction.set(0, 0, -1).applyMatrix4(_mat);
@@ -273,10 +290,10 @@ function render() {
             STATE.hoveredBtn = null;
         }
 
-        // B. Lógica de Vértices (Touch)
+        // Proximidad Vértices
         checkProximitySelection();
         
-        // C. Actualizar geometría en tiempo real si estamos agarrando un vértice
+        // Update live drag
         if (STATE.grabbedElement && STATE.grabbedElement.userData.isVertex) {
             updateVertexPosition(STATE.grabbedElement);
         }
@@ -286,74 +303,120 @@ function render() {
 }
 
 // ==========================================
-// 5. LÓGICA DE SELECCIÓN Y VÉRTICES
+// 5. SISTEMA DE SOLDADURA (WELDING)
 // ==========================================
 
-function checkProximitySelection() {
-    if (STATE.mode !== 'VERTEX' || !STATE.mainMesh || !selectorSphere) return;
-    
-    // Si ya tenemos algo agarrado, no buscar nuevos
-    if (STATE.grabbedElement) return;
+function toggleAutoWeld() {
+    STATE.autoWeld = !STATE.autoWeld;
+    // Feedback visual en el indicador
+    const ind = uiGroup.getObjectByName("weldIndicator");
+    if(ind) ind.material.color.setHex(STATE.autoWeld ? 0x00ff00 : 0x333333);
+}
 
-    selectorSphere.getWorldPosition(_tempVecA);
+function checkForWeld(movedDot) {
+    if (!STATE.mainMesh) return;
     
-    let minDist = SELECTOR_RADIUS;
-    let closest = null;
+    movedDot.getWorldPosition(_tempVecA);
+    const myIdx = movedDot.userData.index;
 
-    // Buscar más cercano
+    // Buscar vecino más cercano (que no sea yo mismo)
     for (let child of STATE.mainMesh.children) {
         if (!child.userData.isVertex) continue;
+        if (child === movedDot) continue;
+
         child.getWorldPosition(_tempVecB);
         const dist = _tempVecA.distanceTo(_tempVecB);
-        if (dist < minDist) {
-            minDist = dist;
-            closest = child;
-        }
-    }
 
-    // Colorear
-    for (let child of STATE.mainMesh.children) {
-        if (!child.userData.isVertex) continue;
-        if (child === closest) {
-            child.material.color.setHex(0xffff00); // Amarillo (Listo para agarrar)
-            child.scale.set(1.5, 1.5, 1.5);
-        } else {
-            child.material.color.setHex(0x00ff00); // Verde
-            child.scale.set(1, 1, 1);
+        if (dist < WELD_THRESHOLD) {
+            // ¡ENCONTRADO CANDIDATO!
+            weldVertices(myIdx, child.userData.index);
+            
+            // Snap visual: mover el punto que solté a la posición del vecino
+            movedDot.position.copy(child.position);
+            
+            // Feedback visual breve (parpadeo azul)
+            child.material.color.setHex(0x00ffff);
+            setTimeout(()=>child.material.color.setHex(0x00ff00), 300);
+            return; // Solo soldamos con uno a la vez para estabilidad
         }
     }
-    STATE.closestVertex = closest;
 }
+
+function weldVertices(idxA, idxB) {
+    // Lógica de Grupos: A y B pasan a tener el mismo GroupID
+    let groupA = STATE.vertexGroups.get(idxA);
+    let groupB = STATE.vertexGroups.get(idxB);
+
+    let newGroup = groupA || groupB || Date.now(); // ID único
+
+    // Asignar grupo a ambos
+    STATE.vertexGroups.set(idxA, newGroup);
+    STATE.vertexGroups.set(idxB, newGroup);
+
+    // Si había grupos separados, fusionarlos todos
+    if (groupA && groupB && groupA !== groupB) {
+        for (let [key, val] of STATE.vertexGroups) {
+            if (val === groupA || val === groupB) STATE.vertexGroups.set(key, newGroup);
+        }
+    }
+}
+
+function unweldSelected() {
+    // Romper el grupo del vértice seleccionado actualmente
+    if (STATE.selected && STATE.selected.userData.isVertex) {
+        const idx = STATE.selected.userData.index;
+        STATE.vertexGroups.delete(idx);
+        // Feedback visual
+        STATE.selected.scale.set(0.5,0.5,0.5);
+        setTimeout(()=>STATE.selected.scale.set(1,1,1), 200);
+    }
+}
+
+// ==========================================
+// 6. ACTUALIZACIÓN DE GEOMETRÍA
+// ==========================================
 
 function updateVertexPosition(dot) {
     const mesh = dot.userData.parentMesh;
     const idx = dot.userData.index;
     const attr = mesh.geometry.attributes.position;
     
-    // Truco matemático: 
-    // Como el dot está pegado al control (World Space) pero necesitamos coords locales para la geometría...
-    // 1. Obtenemos posición mundo del dot
-    dot.getWorldPosition(_tempVecA);
-    // 2. Convertimos a espacio local del mesh
-    mesh.worldToLocal(_tempVecA);
+    // 1. Actualizar el vértice que estoy moviendo
+    attr.setXYZ(idx, dot.position.x, dot.position.y, dot.position.z);
+
+    // 2. Actualizar sus "Hermanos" (Soldados)
+    const myGroup = STATE.vertexGroups.get(idx);
     
-    // 3. Actualizamos buffer
-    attr.setXYZ(idx, _tempVecA.x, _tempVecA.y, _tempVecA.z);
+    if (myGroup) {
+        // Buscar otros puntos en el mismo grupo
+        for (let child of mesh.children) {
+            if (!child.userData.isVertex) continue;
+            if (child === dot) continue; // No soy yo
+
+            const otherIdx = child.userData.index;
+            if (STATE.vertexGroups.get(otherIdx) === myGroup) {
+                // Copiar mi posición al hermano
+                child.position.copy(dot.position);
+                attr.setXYZ(otherIdx, dot.position.x, dot.position.y, dot.position.z);
+            }
+        }
+    }
+
     attr.needsUpdate = true;
-    
-    // Importante para que la colisión siga funcionando bien
     mesh.geometry.computeBoundingSphere();
 }
 
-// --- CORE ---
+// ==========================================
+// 7. FUNCIONES STANDARD
+// ==========================================
+
 function spawn(type) {
-    const geo = (type==='box') ? new THREE.BoxGeometry(0.2,0.2,0.2) : new THREE.SphereGeometry(0.15,12,8);
-    const mat = new THREE.MeshStandardMaterial({ color: Math.random()*0xffffff, roughness: 0.4 });
+    const geo = (type==='box') ? new THREE.BoxGeometry(0.2,0.2,0.2, 2,2,2) : new THREE.SphereGeometry(0.15,12,8);
+    const mat = new THREE.MeshStandardMaterial({ color: Math.random()*0xffffff, roughness: 0.4, wireframe:false });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(0, 1.3, -0.6).applyMatrix4(camera.matrixWorld);
     scene.add(mesh);
     objects.push(mesh);
-    
     if(STATE.mode === 'VERTEX') toggleMode();
     select(mesh);
 }
@@ -366,13 +429,52 @@ function checkRaycastSelection() {
 
 function select(obj) {
     if (STATE.selected === obj) return;
-    if (STATE.selected) STATE.selected.material.emissive.setHex(0x000000);
+    if (STATE.selected) {
+        if(STATE.selected.userData.isVertex) STATE.selected.material.color.setHex(0x00ff00);
+        else STATE.selected.material.emissive.setHex(0x000000);
+    }
     STATE.selected = obj;
-    if (obj) obj.material.emissive.setHex(0x333333);
+    if (obj) {
+        if (obj.userData.isVertex) obj.material.color.setHex(0xffff00);
+        else obj.material.emissive.setHex(0x333333);
+    }
+}
+
+function checkProximitySelection() {
+    if (STATE.mode !== 'VERTEX' || !STATE.mainMesh || !selectorSphere) return;
+    if (STATE.grabbedElement) return;
+
+    selectorSphere.getWorldPosition(_tempVecA);
+    let minDist = SELECTOR_RADIUS;
+    let closest = null;
+
+    for (let child of STATE.mainMesh.children) {
+        if (!child.userData.isVertex) continue;
+        child.getWorldPosition(_tempVecB);
+        const dist = _tempVecA.distanceTo(_tempVecB);
+        if (dist < minDist) { minDist = dist; closest = child; }
+    }
+
+    for (let child of STATE.mainMesh.children) {
+        if (!child.userData.isVertex) continue;
+        if (child === closest) {
+            child.material.color.setHex(0xffff00);
+            child.scale.set(1.5, 1.5, 1.5);
+        } else {
+            // Si está soldado al seleccionado, mostrarlo distinto
+            if (STATE.selected && STATE.vertexGroups.get(child.userData.index) === STATE.vertexGroups.get(STATE.selected.userData.index) && STATE.vertexGroups.has(child.userData.index)) {
+                child.material.color.setHex(0x00ffff); // Cian = Hermano soldado
+            } else {
+                child.material.color.setHex(0x00ff00);
+            }
+            child.scale.set(1, 1, 1);
+        }
+    }
+    STATE.closestVertex = closest;
 }
 
 function toggleMode() {
-    const target = (STATE.selected || STATE.mainMesh);
+    const target = (STATE.selected && STATE.selected.userData.isVertex) ? STATE.selected.userData.parentMesh : (STATE.selected || STATE.mainMesh);
     if (!target) return;
 
     if (STATE.mode === 'OBJECT') {
@@ -388,16 +490,18 @@ function toggleMode() {
             clearVertexHelpers(STATE.mainMesh);
             select(STATE.mainMesh);
         }
+        // Limpiar mapa de soldaduras al salir (opcional, o mantenerlo)
+        STATE.vertexGroups.clear();
     }
 }
 
 function createVertexHelpers(mesh) {
     const pos = mesh.geometry.attributes.position;
-    const geo = new THREE.BoxGeometry(0.015, 0.015, 0.015);
+    const geo = new THREE.BoxGeometry(0.012, 0.012, 0.012);
     const baseMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
 
     for(let i=0; i<pos.count; i++) {
-        const dot = new THREE.Mesh(geo, baseMat.clone()); // Clonar mat para colores indep.
+        const dot = new THREE.Mesh(geo, baseMat.clone());
         const v = new THREE.Vector3().fromBufferAttribute(pos, i);
         dot.position.copy(v);
         dot.userData = { isVertex: true, index: i, parentMesh: mesh };
@@ -408,8 +512,6 @@ function createVertexHelpers(mesh) {
 function clearVertexHelpers(mesh) {
     for(let i = mesh.children.length - 1; i >= 0; i--) {
         if(mesh.children[i].userData.isVertex) {
-            mesh.children[i].geometry.dispose();
-            mesh.children[i].material.dispose();
             mesh.remove(mesh.children[i]);
         }
     }
