@@ -1,31 +1,27 @@
-
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MR Studio: Vertex Master</title>
+    <title>MR Studio: Debug Edition</title>
     <style>
-        body { margin: 0; background: #000; overflow: hidden; font-family: sans-serif; color: #fff; }
+        body { margin: 0; background: #000; overflow: hidden; font-family: monospace; color: #0f0; }
         #overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             display: flex; flex-direction: column; justify-content: center; align-items: center;
             background: rgba(0,0,0,0.9); z-index: 999;
         }
         button {
-            padding: 20px 50px; font-size: 20px; background: #ffaa00; border: none;
-            border-radius: 10px; font-weight: bold; cursor: pointer; margin-top: 20px;
-            box-shadow: 0 0 20px #ffaa00;
+            padding: 20px 50px; font-size: 20px; background: #00ff00; color: #000; border: none;
+            border-radius: 5px; cursor: pointer; margin-top: 20px; font-weight: bold;
         }
-        .info { font-size: 14px; color: #888; margin-top: 10px; font-family: monospace; }
     </style>
 </head>
 <body>
 
 <div id="overlay">
-    <h1>MR STUDIO: VERTEX FIXED</h1>
-    <p>Grip (Lateral): Rotar Objeto entero</p>
-    <p>Gatillo: Mover Gizmo (Vértices/Objetos)</p>
+    <h1>MR STUDIO: SURGICAL MODE</h1>
+    <p>Depuración activada. Revisa el panel flotante en VR.</p>
     <button id="btn-start">INICIAR SISTEMA</button>
 </div>
 
@@ -44,28 +40,29 @@ import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFa
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
 // ==========================================
-// 1. SISTEMA CENTRAL
+// VARIABLES
 // ==========================================
-const _mat4 = new THREE.Matrix4();
-const _ray = new THREE.Raycaster();
-
 let scene, camera, renderer;
-let ctrlRight, gripLeft, gripRight;
+let ctrlRight, ctrlLeft, gripLeft;
 let uiGroup; 
 const uiButtons = []; 
 const objects = []; 
 let gizmo; 
+let debugPanel, debugCtx; // Panel de texto para ver errores en VR
 
-// Estado del Sistema
+// ESTADO
 const STATE = {
     hoveredBtn: null,
-    selected: null, // Puede ser un OBJETO o un VÉRTICE (helper)
-    mainMesh: null, // Referencia al objeto padre cuando editamos vértices
+    selected: null, 
     mode: 'OBJECT', // OBJECT | VERTEX
-    gizmoMode: 'translate',
-    menuAttached: false,
-    grabbedObject: null
+    vertexHelpers: [], // Lista de puntos verdes
+    activeMesh: null   // El objeto que estamos editando
 };
+
+// UTILIDADES REUTILIZABLES
+const _ray = new THREE.Raycaster();
+const _mat = new THREE.Matrix4();
+const _vec = new THREE.Vector3();
 
 init();
 
@@ -74,7 +71,7 @@ function init() {
     scene.background = new THREE.Color(0x111111);
 
     // Luces
-    const light = new THREE.DirectionalLight(0xffffff, 1.5);
+    const light = new THREE.DirectionalLight(0xffffff, 2);
     light.position.set(2, 5, 2);
     scene.add(light);
     scene.add(new THREE.AmbientLight(0xffffff, 0.5));
@@ -85,125 +82,154 @@ function init() {
 
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.xr.enabled = true;
     document.body.appendChild(renderer.domElement);
 
     // GIZMO
     gizmo = new TransformControls(camera, renderer.domElement);
-    gizmo.addEventListener('dragging-changed', (event) => {
-        // Bloquear otros inputs al arrastrar
+    gizmo.addEventListener('dragging-changed', (e) => {
+        // Bloquear logica extra mientras arrastras
     });
-    // *** CRÍTICO: Actualizar geometría al mover el Gizmo ***
     gizmo.addEventListener('change', () => {
-        // Si estamos moviendo un punto verde (Vértice)
         if (STATE.mode === 'VERTEX' && STATE.selected && STATE.selected.userData.isVertex) {
-            updateVertexGeo(STATE.selected);
+            updateVertexPosition(STATE.selected);
         }
     });
     scene.add(gizmo);
 
+    createDebugPanel();
     setupControllers();
     createWristUI();
 
     document.getElementById('btn-start').addEventListener('click', () => {
-        const sessionInit = { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] };
-        navigator.xr.requestSession('immersive-ar', sessionInit).then(session => {
+        navigator.xr.requestSession('immersive-ar', { 
+            optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] 
+        }).then(session => {
             renderer.xr.setSession(session);
             document.getElementById('overlay').style.display = 'none';
             scene.background = null;
+            log("Sesión Iniciada. Esperando mandos...");
         });
     });
 
     renderer.setAnimationLoop(render);
 }
 
+// ==========================================
+// DEBUG EN VR (Panel Flotante)
+// ==========================================
+function createDebugPanel() {
+    const cvs = document.createElement('canvas');
+    cvs.width = 512; cvs.height = 256;
+    debugCtx = cvs.getContext('2d');
+    debugCtx.fillStyle = 'rgba(0,0,0,0.8)';
+    debugCtx.fillRect(0,0,512,256);
+    
+    const tex = new THREE.CanvasTexture(cvs);
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.25), mat);
+    plane.position.set(0, 1.8, -1.5); // Flotando frente a la cara
+    scene.add(plane);
+    debugPanel = tex;
+    log("Sistema listo.");
+}
+
+function log(msg) {
+    if (!debugCtx) return;
+    // Limpiar y redibujar
+    debugCtx.fillStyle = 'rgba(0,0,0,0.8)';
+    debugCtx.fillRect(0,0,512,256);
+    debugCtx.fillStyle = '#0f0';
+    debugCtx.font = '24px monospace';
+    debugCtx.fillText(msg, 10, 50);
+    debugCtx.fillText("Mode: " + STATE.mode, 10, 100);
+    if(STATE.selected) debugCtx.fillText("Sel: " + (STATE.selected.userData.isVertex ? "Vertice" : "Objeto"), 10, 140);
+    debugPanel.needsUpdate = true;
+}
+
+// ==========================================
+// CONTROLADORES
+// ==========================================
 function setupControllers() {
     const modelFactory = new XRControllerModelFactory();
 
-    // MANO DERECHA
+    // Detección estricta de manos
     const c0 = renderer.xr.getController(0);
     const c1 = renderer.xr.getController(1);
 
     const onConnected = (e) => {
         if (e.data.handedness === 'right') {
             ctrlRight = e.target;
+            log("Mano Derecha Conectada");
             
-            // Rayo Láser
+            // Rayo
             const line = new THREE.Line(
                 new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-5)]),
                 new THREE.LineBasicMaterial({ color: 0x0088ff })
             );
             ctrlRight.add(line);
-
+            
             ctrlRight.addEventListener('selectstart', onTriggerStart);
-            ctrlRight.addEventListener('selectend', onTriggerEnd);
-            ctrlRight.addEventListener('squeezestart', onGripStart);
-            ctrlRight.addEventListener('squeezeend', onGripEnd);
+        }
+        if (e.data.handedness === 'left') {
+            ctrlLeft = e.target;
+            log("Mano Izquierda Conectada");
         }
     };
+
     c0.addEventListener('connected', onConnected);
     c1.addEventListener('connected', onConnected);
     scene.add(c0);
     scene.add(c1);
 
-    // GRIPS
-    gripLeft = renderer.xr.getControllerGrip(0); 
+    // Grip Izquierdo para el menú
+    gripLeft = renderer.xr.getControllerGrip(0); // Asumimos 0/1, si falla, el menú no aparecerá pero el log dirá por qué
+    // Mejor lógica: buscar el grip que coincida con la mano izquierda
     gripLeft.add(modelFactory.createControllerModel(gripLeft));
     scene.add(gripLeft);
-
-    gripRight = renderer.xr.getControllerGrip(1);
-    gripRight.add(modelFactory.createControllerModel(gripRight));
-    scene.add(gripRight);
 }
 
 // ==========================================
-// 2. UI WRIST (ROTADA Y POSICIONADA)
+// UI
 // ==========================================
 function createWristUI() {
     uiGroup = new THREE.Group();
-    uiGroup.position.set(0.05, 0.05, -0.05); 
-    uiGroup.rotation.set(-Math.PI / 2, 0, Math.PI / 2);
+    // Posición y rotación de reloj
+    uiGroup.position.set(0.05, 0.05, -0.05);
+    uiGroup.rotation.set(-Math.PI/2, 0, Math.PI/2);
 
-    const w = 0.16, h = 0.22;
     const bg = new THREE.Mesh(
-        new THREE.PlaneGeometry(w, h),
-        new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.8 })
+        new THREE.PlaneGeometry(0.18, 0.22),
+        new THREE.MeshBasicMaterial({ color: 0x000000, opacity: 0.8, transparent: true })
     );
-    const border = new THREE.LineSegments(
-        new THREE.EdgesGeometry(bg.geometry),
-        new THREE.LineBasicMaterial({ color: 0xffaa00 })
-    );
-    bg.add(border);
     uiGroup.add(bg);
 
-    createBtn('CUBO', 0x0055ff, -0.04, 0.08, () => spawn('box'));
-    createBtn('ESFERA', 0x00aa55, 0.04, 0.08, () => spawn('sphere'));
-
-    createBtn('MOVER', 0xffaa00, -0.04, 0.03, () => setGizmo('translate'));
-    createBtn('ROTAR', 0xffaa00, 0.04, 0.03, () => setGizmo('rotate'));
-    createBtn('ESCALAR', 0xffaa00, -0.04, -0.02, () => setGizmo('scale'));
+    createBtn('CUBO', 0x0055ff, -0.04, 0.06, () => spawn('box'));
+    createBtn('ESFERA', 0x00aa55, 0.04, 0.06, () => spawn('sphere'));
     
-    createBtn('OBJ/VERT', 0xaa00aa, 0.04, -0.02, toggleMode);
-    createBtn('BORRAR', 0xff0000, 0, -0.08, deleteSelected);
+    createBtn('MOVER', 0xffaa00, -0.04, 0.01, () => setGizmo('translate'));
+    createBtn('EDITAR (VERT)', 0xff00ff, 0.04, 0.01, toggleEditMode);
+    
+    createBtn('BORRAR', 0xff0000, 0, -0.06, deleteSelected);
 }
 
 function createBtn(text, color, x, y, cb) {
     const btn = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.06, 0.04),
+        new THREE.PlaneGeometry(0.07, 0.04),
         new THREE.MeshBasicMaterial({ color: color })
     );
-    btn.position.set(x, y, 0.005);
-
+    btn.position.set(x, y, 0.01);
+    
+    // Canvas Text
     const cvs = document.createElement('canvas'); cvs.width=128; cvs.height=64;
     const ctx = cvs.getContext('2d');
     ctx.fillStyle = '#' + new THREE.Color(color).getHexString(); ctx.fillRect(0,0,128,64);
-    ctx.fillStyle = 'white'; ctx.font = 'bold 24px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillStyle = 'white'; ctx.font = 'bold 20px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText(text, 64, 32);
-    
     const tex = new THREE.CanvasTexture(cvs);
-    const label = new THREE.Mesh(new THREE.PlaneGeometry(0.06, 0.03), new THREE.MeshBasicMaterial({map:tex, transparent:true}));
-    label.position.z = 0.002;
+    
+    const label = new THREE.Mesh(new THREE.PlaneGeometry(0.07, 0.04), new THREE.MeshBasicMaterial({map:tex, transparent:true}));
+    label.position.z = 0.005;
     btn.add(label);
 
     btn.userData = { isButton: true, action: cb, baseColor: new THREE.Color(color) };
@@ -212,250 +238,215 @@ function createBtn(text, color, x, y, cb) {
 }
 
 // ==========================================
-// 3. INTERACCIÓN (CORE LOGIC)
+// LÓGICA CORE
 // ==========================================
 
-// GRIP: Rotación estilo "Sostener en mano"
-function onGripStart() {
-    // Solo permitimos agarre de objeto completo en modo OBJECT
-    if (STATE.mode === 'OBJECT' && STATE.selected && !STATE.selected.userData.isVertex) {
-        STATE.grabbedObject = STATE.selected;
-        gizmo.detach();
-        ctrlRight.attach(STATE.grabbedObject);
-        highlight(STATE.grabbedObject, 0xffffff);
-    }
-}
-
-function onGripEnd() {
-    if (STATE.grabbedObject) {
-        scene.attach(STATE.grabbedObject);
-        gizmo.attach(STATE.grabbedObject);
-        highlight(STATE.grabbedObject, 0xffff00);
-        STATE.grabbedObject = null;
-    }
-}
-
-// TRIGGER: Selección y Clics UI
 function onTriggerStart() {
     if (STATE.hoveredBtn) {
+        log("Boton presionado");
         STATE.hoveredBtn.userData.action();
-        pulseBtn(STATE.hoveredBtn);
+        // Animacion
+        STATE.hoveredBtn.scale.set(0.9,0.9,1);
+        setTimeout(()=>STATE.hoveredBtn.scale.set(1,1,1), 100);
     } else {
-        checkSelection();
+        // Intentar seleccionar en escena
+        trySelect();
     }
 }
 
-function onTriggerEnd() { }
-
 function render() {
-    if (!STATE.menuAttached && gripLeft) {
+    // Anclar menú a mano izquierda si está disponible
+    if (uiGroup.parent !== gripLeft && gripLeft) {
         gripLeft.add(uiGroup);
-        STATE.menuAttached = true;
     }
 
     if (ctrlRight) {
-        _mat4.identity().extractRotation(ctrlRight.matrixWorld);
+        _mat.identity().extractRotation(ctrlRight.matrixWorld);
         _ray.ray.origin.setFromMatrixPosition(ctrlRight.matrixWorld);
-        _ray.ray.direction.set(0, 0, -1).applyMatrix4(_mat4);
+        _ray.ray.direction.set(0, 0, -1).applyMatrix4(_mat);
 
-        // UI
+        // 1. Check UI
         const uiHits = _ray.intersectObjects(uiButtons, false);
-        if (uiHits.length > 0) setHover(uiHits[0].object);
-        else setHover(null);
+        if (uiHits.length > 0) {
+            if(STATE.hoveredBtn !== uiHits[0].object) {
+                if(STATE.hoveredBtn) STATE.hoveredBtn.material.color.copy(STATE.hoveredBtn.userData.baseColor);
+                STATE.hoveredBtn = uiHits[0].object;
+                STATE.hoveredBtn.material.color.setHex(0xffffff);
+            }
+        } else {
+            if(STATE.hoveredBtn) {
+                STATE.hoveredBtn.material.color.copy(STATE.hoveredBtn.userData.baseColor);
+                STATE.hoveredBtn = null;
+            }
+        }
     }
 
     renderer.render(scene, camera);
 }
 
 // ==========================================
-// 4. LÓGICA DE SELECCIÓN Y VÉRTICES (FIXED)
+// LÓGICA DE EDICIÓN (LA CLAVE)
 // ==========================================
 
 function spawn(type) {
-    let geo;
-    if(type==='box') geo = new THREE.BoxGeometry(0.2,0.2,0.2);
-    else geo = new THREE.SphereGeometry(0.15, 16, 12);
-
-    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: Math.random()*0xffffff, roughness: 0.5 }));
-    mesh.position.set(0, 0, -0.5).applyMatrix4(camera.matrixWorld);
+    let geo = (type==='box') ? new THREE.BoxGeometry(0.2,0.2,0.2) : new THREE.SphereGeometry(0.15,12,8);
+    let mat = new THREE.MeshStandardMaterial({ color: Math.random()*0xffffff, roughness:0.4 });
+    let mesh = new THREE.Mesh(geo, mat);
     
+    mesh.position.set(0, 1.3, -0.5).applyMatrix4(camera.matrixWorld);
     scene.add(mesh);
     objects.push(mesh);
+    
     select(mesh);
+    log("Objeto Creado");
 }
 
-function checkSelection() {
+function toggleEditMode() {
+    if (!STATE.activeMesh && (!STATE.selected || STATE.selected.userData.isVertex)) {
+        log("Selecciona un objeto primero");
+        return;
+    }
+
+    if (STATE.mode === 'OBJECT') {
+        // ENTRAR A MODO VÉRTICE
+        STATE.mode = 'VERTEX';
+        STATE.activeMesh = STATE.selected; // Guardar referencia
+        
+        gizmo.detach();
+        
+        // 1. Mostrar Wireframe
+        STATE.activeMesh.material.wireframe = true;
+        
+        // 2. Generar Puntos Verdes
+        generateVertexHelpers(STATE.activeMesh);
+        
+        log("MODO VERTICE: Objeto bloqueado");
+        
+    } else {
+        // SALIR A MODO OBJETO
+        STATE.mode = 'OBJECT';
+        
+        gizmo.detach();
+        
+        // 1. Quitar Wireframe
+        if(STATE.activeMesh) {
+            STATE.activeMesh.material.wireframe = false;
+            removeVertexHelpers(STATE.activeMesh);
+            select(STATE.activeMesh);
+        }
+        
+        STATE.vertexHelpers = [];
+        log("MODO OBJETO");
+    }
+}
+
+function trySelect() {
+    // Si estamos en la UI, ignorar
     if (STATE.hoveredBtn) return;
 
     let targets = [];
 
-    // *** CORRECCIÓN CRÍTICA DE RAYCAST ***
-    if (STATE.mode === 'VERTEX' && STATE.mainMesh) {
-        // En modo vértice, SOLO buscamos colisión con los puntos verdes (hijos)
-        // Ignoramos la malla principal para que no bloquee el rayo
-        targets = STATE.mainMesh.children.filter(c => c.userData.isVertex);
+    if (STATE.mode === 'VERTEX') {
+        // FILTRO QUIRÚRGICO: Solo miramos los puntos verdes.
+        // Ignoramos completamente el array 'objects' (los cubos grandes)
+        targets = STATE.vertexHelpers; 
     } else {
-        // En modo objeto, buscamos todo
+        // Modo normal
         targets = objects;
     }
 
-    // Raycast recursivo false para optimizar en modo objeto, true (o targets específicos) para vertices
     const hits = _ray.intersectObjects(targets, false);
-    
+
     if (hits.length > 0) {
         select(hits[0].object);
+        log("Seleccionado: " + (hits[0].object.userData.isVertex ? "Punto" : "Objeto"));
+    } else {
+        // Si clicamos en el vacío en modo objeto, deseleccionar.
+        // En modo vértice, no deseleccionamos para no perder el contexto.
+        if (STATE.mode === 'OBJECT') {
+            select(null);
+            log("Deseleccionado");
+        }
     }
 }
 
 function select(obj) {
-    // Si ya está seleccionado, no hacer nada (a menos que cambiemos de modo)
-    if (STATE.selected === obj) return;
-
-    // Limpiar selección anterior (si era objeto)
-    if (STATE.selected && !STATE.selected.userData.isVertex) {
-        highlight(STATE.selected, null);
-    }
-    // Si anterior era vértice, quitarle el amarillo
-    if (STATE.selected && STATE.selected.userData.isVertex) {
-        STATE.selected.material.color.setHex(0x00ff00);
-    }
-
     STATE.selected = obj;
+    
+    if (!obj) {
+        gizmo.detach();
+        return;
+    }
 
-    if (obj) {
+    if (obj.userData.isVertex) {
         gizmo.attach(obj);
-
-        if (obj.userData.isVertex) {
-            // ES UN VÉRTICE
-            gizmo.setSpace('local'); // Importante para mover relativo a la malla
-            obj.material.color.setHex(0xffff00); // Highlight vértice
-        } else {
-            // ES UN OBJETO
-            STATE.mainMesh = obj; // Guardamos referencia
-            highlight(obj, 0xffff00);
+        gizmo.setSpace('local'); 
+        obj.material.color.setHex(0xffff00); // Amarillo
+    } else {
+        // Solo permitir seleccionar objetos principales en modo OBJETO
+        if (STATE.mode === 'OBJECT') {
+            gizmo.attach(obj);
             gizmo.setSpace('local');
         }
-    } else {
-        gizmo.detach();
     }
 }
 
-function toggleMode() {
-    if (!STATE.mainMesh) return; // Necesitamos un objeto activo
-
-    if (STATE.mode === 'OBJECT') {
-        STATE.mode = 'VERTEX';
-        
-        // 1. Quitar gizmo del objeto grande
-        gizmo.detach();
-        
-        // 2. Mostrar wireframe
-        STATE.mainMesh.material.wireframe = true;
-        
-        // 3. Generar puntos
-        createVertexHelpers(STATE.mainMesh);
-        
-        // 4. Limpiar selección actual para obligar al usuario a elegir un vértice
-        STATE.selected = null;
-        
-    } else {
-        STATE.mode = 'OBJECT';
-        
-        // 1. Limpiar puntos
-        clearVertexHelpers(STATE.mainMesh);
-        STATE.mainMesh.material.wireframe = false;
-        
-        // 2. Reseleccionar el objeto principal
-        select(STATE.mainMesh);
-    }
+function setGizmo(mode) {
+    gizmo.setMode(mode);
+    log("Gizmo: " + mode);
 }
 
-// --- HELPERS VÉRTICES ---
-function createVertexHelpers(mesh) {
+// --- HELPER FUNCTIONS PARA VÉRTICES ---
+
+function generateVertexHelpers(mesh) {
+    STATE.vertexHelpers = []; // Limpiar lista
     const pos = mesh.geometry.attributes.position;
-    // Usar BoxGeometry pequeña es más eficiente que Sphere para raycasting
-    const helperGeo = new THREE.BoxGeometry(0.02, 0.02, 0.02); 
-    const helperMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+    
+    // Usamos esferas para mejor detección visual, aunque consumen más que cubos
+    const geo = new THREE.SphereGeometry(0.015, 6, 6); 
+    const mat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
 
     for(let i=0; i<pos.count; i++) {
-        const dot = new THREE.Mesh(helperGeo, helperMat.clone());
+        const dot = new THREE.Mesh(geo, mat.clone());
         const v = new THREE.Vector3().fromBufferAttribute(pos, i);
         
-        dot.position.copy(v); // Posición LOCAL
+        dot.position.copy(v); // Posición local relativa al padre
         dot.userData = { isVertex: true, index: i, parentMesh: mesh };
         
-        mesh.add(dot); // IMPORTANTE: Hijo del mesh para heredar transforms
+        mesh.add(dot); // IMPORTANTE: Es hijo del objeto
+        STATE.vertexHelpers.push(dot); // Añadir a la lista "Quirúrgica"
     }
 }
 
-function clearVertexHelpers(mesh) {
-    for(let i = mesh.children.length - 1; i >= 0; i--) {
-        if(mesh.children[i].userData.isVertex) {
-            const child = mesh.children[i];
-            child.geometry.dispose();
-            child.material.dispose();
-            mesh.remove(child);
+function removeVertexHelpers(mesh) {
+    // Borrar hijos vértices
+    for (let i = mesh.children.length - 1; i >= 0; i--) {
+        if (mesh.children[i].userData.isVertex) {
+            mesh.remove(mesh.children[i]);
         }
     }
+    STATE.vertexHelpers = [];
 }
 
-// --- ACTUALIZACIÓN DE GEOMETRÍA ---
-function updateVertexGeo(dot) {
+function updateVertexPosition(dot) {
     const mesh = dot.userData.parentMesh;
     const idx = dot.userData.index;
-    const posAttr = mesh.geometry.attributes.position;
+    const attr = mesh.geometry.attributes.position;
     
-    // Como 'dot' es hijo de 'mesh', dot.position ya está en coordenadas locales del mesh.
-    // Simplemente copiamos al buffer.
-    posAttr.setXYZ(idx, dot.position.x, dot.position.y, dot.position.z);
-    
-    posAttr.needsUpdate = true;
-    mesh.geometry.computeBoundingSphere(); // Para frustum culling correcto
-    // Opcional: Recalcular normales es costoso, hazlo solo si es necesario visualmente
-    // mesh.geometry.computeVertexNormals(); 
-}
-
-// --- UTILS ---
-function setGizmo(mode) {
-    STATE.gizmoMode = mode;
-    gizmo.setMode(mode);
+    // Como el dot es hijo del mesh, dot.position YA ES local
+    attr.setXYZ(idx, dot.position.x, dot.position.y, dot.position.z);
+    attr.needsUpdate = true;
 }
 
 function deleteSelected() {
-    if (STATE.selected) {
-        if (STATE.selected.userData.isVertex) return; // No borrar vértices individuales
-        gizmo.detach();
+    if(STATE.selected && !STATE.selected.userData.isVertex) {
         scene.remove(STATE.selected);
-        const i = objects.indexOf(STATE.selected);
-        if(i>-1) objects.splice(i,1);
+        const idx = objects.indexOf(STATE.selected);
+        if(idx > -1) objects.splice(idx, 1);
+        gizmo.detach();
         STATE.selected = null;
-        STATE.mainMesh = null;
+        log("Borrado");
     }
-}
-
-function setHover(btn) {
-    if (STATE.hoveredBtn === btn) return;
-    if (STATE.hoveredBtn) {
-        STATE.hoveredBtn.scale.set(1,1,1);
-        STATE.hoveredBtn.material.color.copy(STATE.hoveredBtn.userData.baseColor);
-    }
-    STATE.hoveredBtn = btn;
-    if (btn) {
-        btn.scale.set(1.1, 1.1, 1);
-        btn.material.color.setHex(0x00ff00);
-    }
-}
-
-function pulseBtn(btn) {
-    btn.scale.set(0.9,0.9,1);
-    setTimeout(()=>btn.scale.set(1.1,1.1,1),100);
-}
-
-function highlight(obj, color) {
-    if (!obj.material) return;
-    if (!obj.material.emissive) return;
-    if (color) obj.material.emissive.setHex(0x333333);
-    else obj.material.emissive.setHex(0x000000);
 }
 
 </script>
