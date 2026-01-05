@@ -1,31 +1,30 @@
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MR Studio: Fixed UX</title>
+    <title>MR Studio: Native UI</title>
     <style>
-        body { margin: 0; background: #111; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+        body { margin: 0; background: #050505; overflow: hidden; font-family: sans-serif; color: #fff; }
         #overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             display: flex; flex-direction: column; justify-content: center; align-items: center;
-            background: rgba(0,0,0,0.9); z-index: 999; color: #ffaa00; text-align: center;
+            background: rgba(0,0,0,0.9); z-index: 999;
         }
         button {
-            padding: 15px 40px; font-size: 20px; background: #ffaa00; color: #000; border: none;
-            border-radius: 50px; font-weight: bold; cursor: pointer; margin-top: 20px;
-            box-shadow: 0 0 20px rgba(255, 170, 0, 0.5); transition: transform 0.1s;
+            padding: 15px 40px; font-size: 18px; background: #0088ff; color: #fff; border: none;
+            border-radius: 8px; cursor: pointer; margin-top: 20px; text-transform: uppercase;
+            font-weight: bold; box-shadow: 0 0 20px rgba(0,136,255,0.5);
         }
-        button:active { transform: scale(0.95); }
     </style>
 </head>
 <body>
 
 <div id="overlay">
-    <h1>MR STUDIO: COMFORT EDITION</h1>
-    <p>1. Levanta tu muñeca izquierda para ver el menú (Gira hacia ti).</p>
-    <p>2. Apunta con la derecha (Los botones se iluminan).</p>
-    <button id="btn-start">ENTRAR EN MR</button>
+    <h1>MR STUDIO: NATIVE</h1>
+    <p>Interfaz nativa de alto rendimiento</p>
+    <button id="btn-start">INICIAR (AR/VR)</button>
 </div>
 
 <script type="importmap">
@@ -42,44 +41,39 @@ import * as THREE from 'three';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 
 let scene, camera, renderer;
-let controllerRight, controllerLeft;
-let gripRight, gripLeft;
+let ctrlRight, ctrlLeft, gripLeft;
 let raycaster, tempMatrix = new THREE.Matrix4();
 
 // Grupos
 const worldGroup = new THREE.Group();
-const helperGroup = new THREE.Group();
-const uiGroup = new THREE.Group();
-const uiContainer = new THREE.Group(); // Contenedor que gira hacia la cámara
+const uiGroup = new THREE.Group(); // El menú nativo
+const uiButtons = []; // Lista para raycasting rápido
 
 // Estado
 const STATE = {
-    mode: 'OBJECT', // OBJECT, VERTEX
-    selected: null,
-    dragging: null,
-    hoveredButton: null, // Botón bajo el rayo actualmente
-    dragOffset: new THREE.Vector3()
+    hovered: null, // Botón bajo el puntero
+    selectedObject: null
 };
 
 init();
 
 function init() {
+    // 1. Escena Básica
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x222222);
+    scene.background = new THREE.Color(0x111111);
     
     scene.add(worldGroup);
-    scene.add(helperGroup);
-
+    
     // Luces
-    const dirLight = new THREE.DirectionalLight(0xffffff, 2);
-    dirLight.position.set(2, 5, 2);
-    scene.add(dirLight);
-    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-    scene.add(new THREE.GridHelper(10, 10, 0x444444, 0x111111));
+    const light = new THREE.DirectionalLight(0xffffff, 2);
+    light.position.set(2, 4, 1);
+    scene.add(light);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+    scene.add(new THREE.GridHelper(10, 10, 0x333333, 0x111111));
 
     // Cámara
     camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 20);
-    camera.position.set(0, 1.6, 2);
+    camera.position.set(0, 1.6, 0);
 
     // Renderer
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -88,399 +82,236 @@ function init() {
     renderer.xr.enabled = true;
     document.body.appendChild(renderer.domElement);
 
+    // 2. Controladores XR
     setupControllers();
-    createSmartMenu(); // Menú mejorado
 
+    // 3. Crear UI Nativa (Texturas Canvas)
+    createNativeWristUI();
+
+    // Evento Inicio
     document.getElementById('btn-start').addEventListener('click', () => {
         const sessionInit = { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] };
         navigator.xr.requestSession('immersive-ar', sessionInit).then(session => {
             renderer.xr.setSession(session);
             document.getElementById('overlay').style.display = 'none';
-            scene.background = null; 
+            scene.background = null; // Passthrough
         });
     });
 
     renderer.setAnimationLoop(render);
-    window.addEventListener('resize', onWindowResize);
 }
 
 function setupControllers() {
-    const modelFactory = new XRControllerModelFactory();
-
     // DERECHA (Puntero)
-    controllerRight = renderer.xr.getController(0);
-    controllerRight.addEventListener('selectstart', onTriggerStart);
-    controllerRight.addEventListener('selectend', onTriggerEnd);
-    scene.add(controllerRight);
+    ctrlRight = renderer.xr.getController(0);
+    ctrlRight.addEventListener('selectstart', onTrigger); 
+    scene.add(ctrlRight);
+
+    // Rayo Láser Fino
+    const lineGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-3)]);
+    const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x0088ff, opacity: 0.5, transparent: true }));
+    ctrlRight.add(line);
+
+    // IZQUIERDA (Anclaje Menú)
+    ctrlLeft = renderer.xr.getController(1);
+    scene.add(ctrlLeft);
+
+    // Modelos físicos (para que veas dónde está tu mano)
+    const modelFactory = new XRControllerModelFactory();
     
-    // Rayo visual más visible
-    const line = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-5)]),
-        new THREE.LineBasicMaterial({ color: 0xffaa00, linewidth: 2 })
-    );
-    controllerRight.add(line);
-
-    gripRight = renderer.xr.getControllerGrip(0);
-    gripRight.add(modelFactory.createControllerModel(gripRight));
-    scene.add(gripRight);
-
-    // IZQUIERDA (Menú)
-    controllerLeft = renderer.xr.getController(1);
-    scene.add(controllerLeft);
-
     gripLeft = renderer.xr.getControllerGrip(1);
     gripLeft.add(modelFactory.createControllerModel(gripLeft));
     scene.add(gripLeft);
+    
+    const gripRight = renderer.xr.getControllerGrip(0);
+    gripRight.add(modelFactory.createControllerModel(gripRight));
+    scene.add(gripRight);
 
-    // Anclar el contenedor del menú a la muñeca izquierda
-    gripLeft.add(uiContainer); 
-    // Posición base sobre la muñeca (se ajustará con LookAt)
-    uiContainer.position.set(0, 0.05, 0.05); 
+    // ANCLAR MENU A LA MUÑECA IZQUIERDA
+    gripLeft.add(uiGroup);
 
     raycaster = new THREE.Raycaster();
 }
 
 // ============================================================================
-// UI MEJORADA (SMART WRIST MENU)
+// GENERADOR DE UI NATIVA (Canvas Texture -> Mesh)
 // ============================================================================
-function createSmartMenu() {
-    // 1. Panel de fondo (oscuro y curvo visualmente)
-    const panelGeo = new THREE.BoxGeometry(0.32, 0.22, 0.01);
-    const panelMat = new THREE.MeshStandardMaterial({ 
-        color: 0x111111, 
-        roughness: 0.2,
-        transparent: true, 
-        opacity: 0.9 
-    });
-    const panel = new THREE.Mesh(panelGeo, panelMat);
-    uiGroup.add(panel);
+function createNativeWristUI() {
+    // 1. Panel Base (Vidrio oscuro)
+    // Tamaño compacto: 14cm x 10cm
+    const bgGeo = new THREE.PlaneGeometry(0.14, 0.10); 
+    const bgMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.8 });
+    const bg = new THREE.Mesh(bgGeo, bgMat);
+    uiGroup.add(bg);
 
-    // Borde brillante
+    // Borde Neón
     const border = new THREE.LineSegments(
-        new THREE.EdgesGeometry(panelGeo),
-        new THREE.LineBasicMaterial({ color: 0xffaa00 })
+        new THREE.EdgesGeometry(bgGeo),
+        new THREE.LineBasicMaterial({ color: 0x0088ff })
     );
     uiGroup.add(border);
 
-    // 2. Generador de Botones 3D
-    const createBtn = (label, color, r, c, callback) => {
-        const btnW = 0.09;
-        const btnH = 0.05;
-        const gap = 0.01;
+    // Posición ergonómica:
+    // x: 0.1 (hacia dentro del brazo)
+    // y: 0.03 (un poco elevado)
+    // rot x: -90 (acostado)
+    // rot z: 45 (inclinado hacia la cara)
+    uiGroup.position.set(0.1, 0.04, 0.05);
+    uiGroup.rotation.set(-Math.PI/2, 0, Math.PI/4);
+
+    // 2. Función para crear botones nítidos
+    const createBtn = (label, color, x, y, action) => {
+        const w = 0.04; // 4cm ancho
+        const h = 0.03; // 3cm alto
+
+        // Crear textura con Canvas 2D
+        const canvas = document.createElement('canvas');
+        canvas.width = 256; canvas.height = 128;
+        const ctx = canvas.getContext('2d');
         
-        // Calcular posición en grid
-        const x = (c - 1) * (btnW + gap);
-        const y = (1 - r) * (btnH + gap);
-
-        const btnGroup = new THREE.Group();
-        btnGroup.position.set(x, y, 0.015); // Sobresalir del panel (Z)
-
-        // Cuerpo del botón
-        const mesh = new THREE.Mesh(
-            new THREE.BoxGeometry(btnW, btnH, 0.015),
-            new THREE.MeshStandardMaterial({ color: color, roughness: 0.5 })
-        );
-        mesh.userData = { isButton: true, callback: callback, baseColor: color };
-        btnGroup.add(mesh);
-
-        // Texto (Canvas Texture)
-        const cvs = document.createElement('canvas'); 
-        cvs.width = 256; cvs.height = 128;
-        const ctx = cvs.getContext('2d');
-        ctx.fillStyle = color; ctx.fillRect(0,0,256,128); // Fondo igual al botón para antialias
-        ctx.fillStyle = (color === 0xffffff) ? '#000' : '#fff'; 
-        ctx.font = 'bold 40px Arial'; 
-        ctx.textAlign = 'center'; 
+        // Fondo
+        ctx.fillStyle = color; 
+        ctx.fillRect(0,0,256,128);
+        // Borde
+        ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 10;
+        ctx.strokeRect(0,0,256,128);
+        // Texto
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 50px Arial';
+        ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
+        ctx.shadowColor="black"; ctx.shadowBlur=5;
         ctx.fillText(label, 128, 64);
-        
-        const tex = new THREE.CanvasTexture(cvs);
-        const textMesh = new THREE.Mesh(
-            new THREE.PlaneGeometry(btnW * 0.9, btnH * 0.9),
-            new THREE.MeshBasicMaterial({ map: tex, transparent: true })
-        );
-        textMesh.position.z = 0.008; // Encima del botón
-        // Importante: pasar el evento del texto al padre
-        textMesh.userData = { isText: true, parentBtn: mesh }; 
-        btnGroup.add(textMesh);
 
-        uiGroup.add(btnGroup);
+        const tex = new THREE.CanvasTexture(canvas);
+        const mat = new THREE.MeshBasicMaterial({ map: tex });
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+        
+        mesh.position.set(x, y, 0.005); // Ligeramente encima del panel
+        mesh.userData = { isButton: true, action: action, originalScale: 1 };
+        
+        uiGroup.add(mesh);
+        uiButtons.push(mesh);
     };
 
-    // --- LAYOUT ---
-    // Fila 0
-    createBtn("CUBO", 0x4488ff, 0, 0, () => spawnObject('box'));
-    createBtn("ESFERA", 0x44ff88, 0, 1, () => spawnObject('sphere'));
-    createBtn("CLONAR", 0xffaa00, 0, 2, cloneObject);
+    // --- FILA 1 ---
+    createBtn("CUBO", "#0055aa", -0.045, 0.02, () => spawn('box'));
+    createBtn("ESFERA", "#00aa55", 0, 0.02, () => spawn('sphere'));
+    createBtn("CILIND", "#aa5500", 0.045, 0.02, () => spawn('cylinder'));
 
-    // Fila 1
-    createBtn("OBJETO", 0xff8800, 1, 0, () => setMode('OBJECT'));
-    createBtn("VÉRTICE", 0xaa00ff, 1, 1, () => setMode('VERTEX'));
-    createBtn("BORRAR", 0xff0000, 1, 2, deleteObject);
-
-    // Fila 2
-    createBtn("COLOR", 0xff00ff, 2, 0, () => colorObject(Math.random() * 0xffffff));
-    createBtn("RESET", 0xaaaaaa, 2, 1, resetScene);
-    
-    // Añadir el grupo de UI al contenedor flotante
-    uiContainer.add(uiGroup);
+    // --- FILA 2 ---
+    createBtn("BORRAR", "#aa0000", -0.045, -0.02, deleteSelected);
+    createBtn("COLOR", "#aa00aa", 0, -0.02, randomColor);
+    createBtn("RESET", "#555555", 0.045, -0.02, resetScene);
 }
 
 // ============================================================================
-// LOGICA DE INTERACCION
+// LÓGICA
 // ============================================================================
 
-function onTriggerStart(e) {
-    const controller = e.target;
-
-    // 1. Verificar si estamos apuntando a un BOTÓN (Hover state active)
-    if (STATE.hoveredButton) {
-        STATE.hoveredButton.userData.callback();
+function onTrigger(e) {
+    // Si hay un botón bajo el puntero (hover), ejecutar acción
+    if (STATE.hovered) {
+        STATE.hovered.userData.action();
         
-        // Animación de click física
-        STATE.hoveredButton.scale.set(0.9, 0.9, 0.5);
-        setTimeout(() => { 
-            if(STATE.hoveredButton) STATE.hoveredButton.scale.set(1, 1, 1); 
-        }, 150);
+        // Feedback visual de click (pequeño rebote)
+        const btn = STATE.hovered;
+        btn.scale.set(0.9, 0.9, 1);
+        setTimeout(() => btn.scale.set(1.1, 1.1, 1), 100); // Vuelve al estado hover
         return;
     }
 
-    // 2. Interacción con Escena
-    checkSceneIntersection(controller, true); // true = start drag
+    // Si no, seleccionar objeto en escena
+    checkSceneSelect(e.target);
 }
 
-function onTriggerEnd() {
-    STATE.dragging = null;
-}
+function render() {
+    if (!ctrlRight) return;
 
-// Raycaster continuo para Hover y Drag
-function updateInteraction() {
-    if (!controllerRight) return;
-
-    // Configurar rayo
-    tempMatrix.identity().extractRotation(controllerRight.matrixWorld);
-    raycaster.ray.origin.setFromMatrixPosition(controllerRight.matrixWorld);
+    // 1. Raycast desde mando derecho
+    tempMatrix.identity().extractRotation(ctrlRight.matrixWorld);
+    raycaster.ray.origin.setFromMatrixPosition(ctrlRight.matrixWorld);
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
 
-    // --- A. Lógica de UI (Hover) ---
-    // Buscamos intersecciones con botones recursivamente
-    const uiHits = raycaster.intersectObjects(uiGroup.children, true);
+    // 2. Comprobar Botones UI
+    const intersects = raycaster.intersectObjects(uiButtons);
     
-    let hitButton = null;
-    if (uiHits.length > 0) {
-        // Encontrar el objeto botón real (puede haber golpeado el texto)
-        const hit = uiHits[0].object;
-        if (hit.userData.isButton) hitButton = hit;
-        else if (hit.userData.isText) hitButton = hit.userData.parentBtn;
-    }
-
-    // Gestionar estado de hover visual
-    if (hitButton !== STATE.hoveredButton) {
-        // Restaurar anterior
-        if (STATE.hoveredButton) {
-            STATE.hoveredButton.material.emissive.setHex(0x000000);
-            STATE.hoveredButton.scale.set(1,1,1);
+    if (intersects.length > 0) {
+        const hit = intersects[0].object;
+        
+        // Cambio de estado HOVER
+        if (STATE.hovered !== hit) {
+            // Restaurar anterior
+            if (STATE.hovered) STATE.hovered.scale.set(1, 1, 1);
+            
+            // Activar nuevo
+            STATE.hovered = hit;
+            STATE.hovered.scale.set(1.1, 1.1, 1); // Crece un 10%
         }
-        
-        // Activar nuevo
-        if (hitButton) {
-            hitButton.material.emissive.setHex(0x555555); // Brillo
-            hitButton.scale.set(1.1, 1.1, 1.1); // Pop up
-        }
-        STATE.hoveredButton = hitButton;
-    }
-
-    // --- B. Lógica de Arrastre (Drag) ---
-    if (STATE.dragging) {
-        const ctrlPos = new THREE.Vector3().setFromMatrixPosition(controllerRight.matrixWorld);
-        
-        // Nueva posición = Posición Control + Offset guardado
-        const newPos = ctrlPos.add(STATE.dragOffset);
-        
-        STATE.dragging.position.copy(newPos);
-
-        // Si es vértice, actualizar malla
-        if (STATE.dragging.userData.isVertex) {
-            updateVertexGeo(STATE.dragging);
-        } else {
-            // Si es objeto, actualizar helpers
-            if (STATE.mode === 'OBJECT') updateSelectionBox();
+    } else {
+        // Nada bajo el puntero
+        if (STATE.hovered) {
+            STATE.hovered.scale.set(1, 1, 1);
+            STATE.hovered = null;
         }
     }
+
+    renderer.render(scene, camera);
 }
 
-function checkSceneIntersection(controller, startDrag) {
-    let targets = [];
-    if (STATE.mode === 'VERTEX') targets = helperGroup.children; // Prioridad vértices
-    else targets = worldGroup.children;
+// --- Funciones de la App ---
 
-    const hits = raycaster.intersectObjects(targets, false);
-    
-    if (hits.length > 0) {
-        const hit = hits[0].object;
-        
-        if (startDrag) {
-            STATE.dragging = hit;
-            // Calcular offset para que el objeto no "salte" al centro del control
-            const ctrlPos = new THREE.Vector3().setFromMatrixPosition(controller.matrixWorld);
-            STATE.dragOffset.subVectors(hit.position, ctrlPos);
-        }
-
-        if (!hit.userData.isVertex) {
-            selectObject(hit);
-        }
-    } else if (startDrag) {
-        // Clic en vacío deselecciona en modo objeto
-        if (STATE.mode === 'OBJECT') {
-            STATE.selected = null;
-            helperGroup.clear();
-        }
-    }
-}
-
-// ============================================================================
-// FUNCIONES 3D (MODELADO)
-// ============================================================================
-
-function spawnObject(type) {
+function spawn(type) {
     let geo;
-    if (type === 'box') geo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
-    else geo = new THREE.SphereGeometry(0.12, 16, 12);
+    if (type === 'box') geo = new THREE.BoxGeometry(0.15, 0.15, 0.15);
+    else if (type === 'sphere') geo = new THREE.SphereGeometry(0.1, 16, 12);
+    else geo = new THREE.CylinderGeometry(0.08, 0.08, 0.15, 16);
 
-    const mesh = new THREE.Mesh(
-        geo,
-        new THREE.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.3, metalness: 0.2 })
-    );
+    const mat = new THREE.MeshStandardMaterial({ color: Math.random() * 0xffffff });
+    const mesh = new THREE.Mesh(geo, mat);
     
-    // Aparece frente al usuario
-    const spawnPos = new THREE.Vector3(0, 0, -0.8).applyMatrix4(camera.matrixWorld);
-    spawnPos.y = Math.max(1, spawnPos.y); // Altura cómoda
+    // Aparece frente a la cámara
+    const spawnPos = new THREE.Vector3(0, 0, -0.5).applyMatrix4(camera.matrixWorld);
     mesh.position.copy(spawnPos);
     
     worldGroup.add(mesh);
-    selectObject(mesh);
+    STATE.selectedObject = mesh;
+    highlight(mesh);
 }
 
-function selectObject(mesh) {
-    STATE.selected = mesh;
-    updateVisuals();
-}
-
-function setMode(mode) {
-    STATE.mode = mode;
-    updateVisuals();
-}
-
-function updateVisuals() {
-    helperGroup.clear();
-    if (!STATE.selected) return;
-
-    if (STATE.mode === 'OBJECT') {
-        STATE.selected.material.wireframe = false;
-        // Bounding Box
-        const box = new THREE.BoxHelper(STATE.selected, 0xffaa00);
-        helperGroup.add(box);
-    } 
-    else if (STATE.mode === 'VERTEX') {
-        STATE.selected.material.wireframe = true;
-        // Crear puntos verdes
-        const pos = STATE.selected.geometry.attributes.position;
-        const pts = [];
-        for(let i=0; i<pos.count; i++) {
-            const vLocal = new THREE.Vector3().fromBufferAttribute(pos, i);
-            const vWorld = STATE.selected.localToWorld(vLocal.clone());
-            
-            const dot = new THREE.Mesh(
-                new THREE.SphereGeometry(0.015),
-                new THREE.MeshBasicMaterial({ color: 0x00ff00 })
-            );
-            dot.position.copy(vWorld);
-            dot.userData = { isVertex: true, index: i, parentMesh: STATE.selected };
-            helperGroup.add(dot);
-        }
+function checkSceneSelect(controller) {
+    const hits = raycaster.intersectObjects(worldGroup.children);
+    if (hits.length > 0) {
+        STATE.selectedObject = hits[0].object;
+        highlight(STATE.selectedObject);
+    } else {
+        STATE.selectedObject = null;
+        // Quitar highlight a todos
+        worldGroup.children.forEach(o => o.material.wireframe = false);
     }
 }
 
-function updateVertexGeo(dot) {
-    const mesh = dot.userData.parentMesh;
-    const idx = dot.userData.index;
-    
-    // World -> Local
-    const local = mesh.worldToLocal(dot.position.clone());
-    
-    mesh.geometry.attributes.position.setXYZ(idx, local.x, local.y, local.z);
-    mesh.geometry.attributes.position.needsUpdate = true;
-    mesh.geometry.computeVertexNormals();
-}
-
-function updateSelectionBox() {
-    if (STATE.selected && STATE.mode === 'OBJECT') {
-        // Re-crear box helper sucio pero efectivo
-        helperGroup.children.forEach(c => {
-            if (c.type === 'BoxHelper') c.update();
-        });
+function deleteSelected() {
+    if (STATE.selectedObject) {
+        worldGroup.remove(STATE.selectedObject);
+        STATE.selectedObject = null;
     }
 }
 
-function deleteObject() {
-    if (STATE.selected) {
-        worldGroup.remove(STATE.selected);
-        STATE.selected = null;
-        helperGroup.clear();
-    }
-}
-
-function cloneObject() {
-    if (STATE.selected) {
-        const clone = STATE.selected.clone();
-        clone.position.x += 0.25;
-        clone.material = STATE.selected.material.clone();
-        worldGroup.add(clone);
-        selectObject(clone);
-    }
-}
-
-function colorObject(hex) {
-    if (STATE.selected) {
-        STATE.selected.material.color.setHex(hex);
+function randomColor() {
+    if (STATE.selectedObject) {
+        STATE.selectedObject.material.color.setHex(Math.random() * 0xffffff);
     }
 }
 
 function resetScene() {
     worldGroup.clear();
-    helperGroup.clear();
-    STATE.selected = null;
+    STATE.selectedObject = null;
 }
 
-// ============================================================================
-// LOOP & UTILIDADES
-// ============================================================================
-
-function onWindowResize() {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-}
-
-function render() {
-    // 1. Actualizar interacción (Rayos, Hover, Drag)
-    updateInteraction();
-
-    // 2. Actualizar UI "Inteligente" (LookAt suave)
-    if (uiContainer && camera) {
-        // La UI está anclada a gripLeft. 
-        // Hacemos que gire en su eje Y local para mirar a la cámara.
-        
-        const targetPos = camera.position.clone();
-        // Convertir posición de cámara al espacio local del contenedor para calcular rotación limpia
-        // Pero una forma más simple para VR es usar lookAt directo en world space
-        // Como uiGroup es hijo de uiContainer que es hijo de Grip... es complejo.
-        
-        // Solución simple: Lerp hacia la cámara para suavidad
-        uiContainer.lookAt(targetPos);
-    }
-
-    renderer.render(scene, camera);
+function highlight(mesh) {
+    worldGroup.children.forEach(o => o.material.wireframe = false);
+    if(mesh) mesh.material.wireframe = true; // Feedback simple de selección
 }
 
 </script>
