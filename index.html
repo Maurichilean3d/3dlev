@@ -1,9 +1,10 @@
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MR Studio: Diamond Hybrid</title>
+    <title>MR Studio: Vertex Master</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; font-family: sans-serif; color: #fff; }
         #overlay {
@@ -16,15 +17,15 @@
             border-radius: 10px; font-weight: bold; cursor: pointer; margin-top: 20px;
             box-shadow: 0 0 20px #ffaa00;
         }
-        .stats { font-size: 12px; color: #888; margin-top: 10px; font-family: monospace; }
+        .info { font-size: 14px; color: #888; margin-top: 10px; font-family: monospace; }
     </style>
 </head>
 <body>
 
 <div id="overlay">
-    <h1>MR STUDIO: HYBRID</h1>
-    <p>Grip (Lateral): Rotación Libre (Mano)</p>
-    <p>Gatillo (Índice): Gizmo de Precisión</p>
+    <h1>MR STUDIO: VERTEX FIXED</h1>
+    <p>Grip (Lateral): Rotar Objeto entero</p>
+    <p>Gatillo: Mover Gizmo (Vértices/Objetos)</p>
     <button id="btn-start">INICIAR SISTEMA</button>
 </div>
 
@@ -47,23 +48,23 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 // ==========================================
 const _mat4 = new THREE.Matrix4();
 const _ray = new THREE.Raycaster();
-const _tempVec = new THREE.Vector3();
 
 let scene, camera, renderer;
 let ctrlRight, gripLeft, gripRight;
 let uiGroup; 
 const uiButtons = []; 
 const objects = []; 
-let gizmo; // El controlador de transformación (Flechas)
+let gizmo; 
 
 // Estado del Sistema
 const STATE = {
     hoveredBtn: null,
-    selectedObj: null,
+    selected: null, // Puede ser un OBJETO o un VÉRTICE (helper)
+    mainMesh: null, // Referencia al objeto padre cuando editamos vértices
     mode: 'OBJECT', // OBJECT | VERTEX
-    gizmoMode: 'translate', // translate | rotate | scale
+    gizmoMode: 'translate',
     menuAttached: false,
-    grabbedObject: null // Objeto agarrado con el GRIP
+    grabbedObject: null
 };
 
 init();
@@ -73,10 +74,10 @@ function init() {
     scene.background = new THREE.Color(0x111111);
 
     // Luces
-    const light = new THREE.DirectionalLight(0xffffff, 2);
+    const light = new THREE.DirectionalLight(0xffffff, 1.5);
     light.position.set(2, 5, 2);
     scene.add(light);
-    scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
     scene.add(new THREE.GridHelper(10, 10, 0x333333, 0x111111));
 
     camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 50);
@@ -88,15 +89,16 @@ function init() {
     renderer.xr.enabled = true;
     document.body.appendChild(renderer.domElement);
 
-    // Gizmo (Transform Controls)
+    // GIZMO
     gizmo = new TransformControls(camera, renderer.domElement);
     gizmo.addEventListener('dragging-changed', (event) => {
-        // Desactivar otros inputs si estamos arrastrando el gizmo
+        // Bloquear otros inputs al arrastrar
     });
-    // Al mover vértice, actualizar geometría
+    // *** CRÍTICO: Actualizar geometría al mover el Gizmo ***
     gizmo.addEventListener('change', () => {
-        if (STATE.mode === 'VERTEX' && STATE.selectedObj && STATE.selectedObj.userData.isVertex) {
-            updateVertexGeo(STATE.selectedObj);
+        // Si estamos moviendo un punto verde (Vértice)
+        if (STATE.mode === 'VERTEX' && STATE.selected && STATE.selected.userData.isVertex) {
+            updateVertexGeo(STATE.selected);
         }
     });
     scene.add(gizmo);
@@ -119,7 +121,7 @@ function init() {
 function setupControllers() {
     const modelFactory = new XRControllerModelFactory();
 
-    // --- MANO DERECHA (Interacción) ---
+    // MANO DERECHA
     const c0 = renderer.xr.getController(0);
     const c1 = renderer.xr.getController(1);
 
@@ -134,11 +136,8 @@ function setupControllers() {
             );
             ctrlRight.add(line);
 
-            // GATILLO (Select / Gizmo)
             ctrlRight.addEventListener('selectstart', onTriggerStart);
             ctrlRight.addEventListener('selectend', onTriggerEnd);
-
-            // GRIP/LATERAL (Agarre libre y rotación)
             ctrlRight.addEventListener('squeezestart', onGripStart);
             ctrlRight.addEventListener('squeezeend', onGripEnd);
         }
@@ -148,7 +147,7 @@ function setupControllers() {
     scene.add(c0);
     scene.add(c1);
 
-    // Grips (Modelos)
+    // GRIPS
     gripLeft = renderer.xr.getControllerGrip(0); 
     gripLeft.add(modelFactory.createControllerModel(gripLeft));
     scene.add(gripLeft);
@@ -159,16 +158,14 @@ function setupControllers() {
 }
 
 // ==========================================
-// 2. UI COMPLETAMENTE RENOVADA
+// 2. UI WRIST (ROTADA Y POSICIONADA)
 // ==========================================
 function createWristUI() {
     uiGroup = new THREE.Group();
-    // Posición y rotación ergonómica (revisada)
     uiGroup.position.set(0.05, 0.05, -0.05); 
     uiGroup.rotation.set(-Math.PI / 2, 0, Math.PI / 2);
 
-    // Panel
-    const w = 0.16, h = 0.20; // Más alto para opciones de edición
+    const w = 0.16, h = 0.22;
     const bg = new THREE.Mesh(
         new THREE.PlaneGeometry(w, h),
         new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.8 })
@@ -180,19 +177,14 @@ function createWristUI() {
     bg.add(border);
     uiGroup.add(bg);
 
-    // --- SECCIÓN CREACIÓN ---
-    createBtn('CUBO', 0x0055ff, -0.04, 0.07, () => spawn('box'));
-    createBtn('ESFERA', 0x00aa55, 0.04, 0.07, () => spawn('sphere'));
+    createBtn('CUBO', 0x0055ff, -0.04, 0.08, () => spawn('box'));
+    createBtn('ESFERA', 0x00aa55, 0.04, 0.08, () => spawn('sphere'));
 
-    // --- SECCIÓN EDICIÓN (Gizmo) ---
-    createBtn('MOVER', 0xffaa00, -0.04, 0.02, () => setGizmo('translate'));
-    createBtn('ROTAR', 0xffaa00, 0.04, 0.02, () => setGizmo('rotate'));
-    createBtn('ESCALAR', 0xffaa00, -0.04, -0.03, () => setGizmo('scale'));
+    createBtn('MOVER', 0xffaa00, -0.04, 0.03, () => setGizmo('translate'));
+    createBtn('ROTAR', 0xffaa00, 0.04, 0.03, () => setGizmo('rotate'));
+    createBtn('ESCALAR', 0xffaa00, -0.04, -0.02, () => setGizmo('scale'));
     
-    // --- SECCIÓN MODO ---
-    createBtn('OBJ/VERT', 0xaa00aa, 0.04, -0.03, toggleMode);
-
-    // --- ACCIONES ---
+    createBtn('OBJ/VERT', 0xaa00aa, 0.04, -0.02, toggleMode);
     createBtn('BORRAR', 0xff0000, 0, -0.08, deleteSelected);
 }
 
@@ -220,85 +212,63 @@ function createBtn(text, color, x, y, cb) {
 }
 
 // ==========================================
-// 3. LÓGICA DE INTERACCIÓN (HYBRID DIAMOND)
+// 3. INTERACCIÓN (CORE LOGIC)
 // ==========================================
 
-// --- GRIP: MANIPULACIÓN LIBRE (ROTACIÓN) ---
+// GRIP: Rotación estilo "Sostener en mano"
 function onGripStart() {
-    // Si tenemos un objeto seleccionado (o un vértice), lo agarramos
-    if (STATE.selectedObj) {
-        // MAGIA DE THREE.JS: attach()
-        // Esto mueve el objeto dentro del controlador manteniendo su posición visual exacta.
-        // Al rotar la muñeca, el objeto rota con ella.
-        STATE.grabbedObject = STATE.selectedObj;
-        
-        if (STATE.mode === 'OBJECT') {
-            gizmo.detach(); // Ocultar gizmo mientras agarramos
-            ctrlRight.attach(STATE.grabbedObject);
-            highlight(STATE.grabbedObject, 0xffffff); // Blanco al agarrar
-        } 
-        else if (STATE.mode === 'VERTEX') {
-            // Lógica especial vértices (opcional, por ahora solo objetos para grip)
-            // Para vértices es mejor usar el Gizmo
-        }
+    // Solo permitimos agarre de objeto completo en modo OBJECT
+    if (STATE.mode === 'OBJECT' && STATE.selected && !STATE.selected.userData.isVertex) {
+        STATE.grabbedObject = STATE.selected;
+        gizmo.detach();
+        ctrlRight.attach(STATE.grabbedObject);
+        highlight(STATE.grabbedObject, 0xffffff);
     }
 }
 
 function onGripEnd() {
     if (STATE.grabbedObject) {
-        // Devolver a la escena
-        scene.attach(STATE.grabbedObject); // Mantiene la nueva posición mundial
-        
-        if (STATE.mode === 'OBJECT') {
-            gizmo.attach(STATE.grabbedObject); // Devolver gizmo
-            highlight(STATE.grabbedObject, 0xffff00); // Amarillo al soltar
-        }
+        scene.attach(STATE.grabbedObject);
+        gizmo.attach(STATE.grabbedObject);
+        highlight(STATE.grabbedObject, 0xffff00);
         STATE.grabbedObject = null;
     }
 }
 
-// --- TRIGGER: UI & GIZMO ---
+// TRIGGER: Selección y Clics UI
 function onTriggerStart() {
     if (STATE.hoveredBtn) {
         STATE.hoveredBtn.userData.action();
         pulseBtn(STATE.hoveredBtn);
     } else {
-        // Raycast para seleccionar
         checkSelection();
     }
 }
 
-function onTriggerEnd() {
-    // Nada especial, el Gizmo se maneja solo
-}
+function onTriggerEnd() { }
 
 function render() {
-    // Anclar UI
     if (!STATE.menuAttached && gripLeft) {
         gripLeft.add(uiGroup);
         STATE.menuAttached = true;
     }
 
     if (ctrlRight) {
-        // Actualizar Raycaster
         _mat4.identity().extractRotation(ctrlRight.matrixWorld);
         _ray.ray.origin.setFromMatrixPosition(ctrlRight.matrixWorld);
         _ray.ray.direction.set(0, 0, -1).applyMatrix4(_mat4);
 
-        // UI Hover
+        // UI
         const uiHits = _ray.intersectObjects(uiButtons, false);
-        if (uiHits.length > 0) {
-            setHover(uiHits[0].object);
-        } else {
-            setHover(null);
-        }
+        if (uiHits.length > 0) setHover(uiHits[0].object);
+        else setHover(null);
     }
 
     renderer.render(scene, camera);
 }
 
 // ==========================================
-// 4. FUNCIONES DE EDICIÓN
+// 4. LÓGICA DE SELECCIÓN Y VÉRTICES (FIXED)
 // ==========================================
 
 function spawn(type) {
@@ -307,8 +277,6 @@ function spawn(type) {
     else geo = new THREE.SphereGeometry(0.15, 16, 12);
 
     const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: Math.random()*0xffffff, roughness: 0.5 }));
-    
-    // Spawn frente al usuario
     mesh.position.set(0, 0, -0.5).applyMatrix4(camera.matrixWorld);
     
     scene.add(mesh);
@@ -317,122 +285,154 @@ function spawn(type) {
 }
 
 function checkSelection() {
-    // Solo si no estamos sobre la UI
     if (STATE.hoveredBtn) return;
 
-    // Si estamos en modo vértice, raycast a puntos
-    let targets = objects;
-    if (STATE.mode === 'VERTEX' && STATE.selectedObj && STATE.selectedObj.children.length > 0) {
-        // Los hijos son los puntos verdes
-        targets = STATE.selectedObj.children; 
+    let targets = [];
+
+    // *** CORRECCIÓN CRÍTICA DE RAYCAST ***
+    if (STATE.mode === 'VERTEX' && STATE.mainMesh) {
+        // En modo vértice, SOLO buscamos colisión con los puntos verdes (hijos)
+        // Ignoramos la malla principal para que no bloquee el rayo
+        targets = STATE.mainMesh.children.filter(c => c.userData.isVertex);
+    } else {
+        // En modo objeto, buscamos todo
+        targets = objects;
     }
 
+    // Raycast recursivo false para optimizar en modo objeto, true (o targets específicos) para vertices
     const hits = _ray.intersectObjects(targets, false);
+    
     if (hits.length > 0) {
         select(hits[0].object);
-    } else {
-        // Si clicamos fuera, soltamos (opcional)
     }
 }
 
 function select(obj) {
-    if (STATE.selectedObj === obj) return;
+    // Si ya está seleccionado, no hacer nada (a menos que cambiemos de modo)
+    if (STATE.selected === obj) return;
 
-    // Limpieza selección anterior
-    if (STATE.selectedObj && STATE.mode === 'OBJECT') {
-        highlight(STATE.selectedObj, null); // Quitar color
+    // Limpiar selección anterior (si era objeto)
+    if (STATE.selected && !STATE.selected.userData.isVertex) {
+        highlight(STATE.selected, null);
+    }
+    // Si anterior era vértice, quitarle el amarillo
+    if (STATE.selected && STATE.selected.userData.isVertex) {
+        STATE.selected.material.color.setHex(0x00ff00);
     }
 
-    STATE.selectedObj = obj;
+    STATE.selected = obj;
 
     if (obj) {
-        // Si seleccionamos un VÉRTICE (punto verde)
+        gizmo.attach(obj);
+
         if (obj.userData.isVertex) {
-             gizmo.attach(obj);
-             gizmo.setSpace('local'); // Vértices mejor en local
-        } 
-        // Si seleccionamos un OBJETO
-        else {
-             if (STATE.mode === 'OBJECT') {
-                 highlight(obj, 0xffff00);
-                 gizmo.attach(obj);
-                 gizmo.setSpace('local');
-             }
+            // ES UN VÉRTICE
+            gizmo.setSpace('local'); // Importante para mover relativo a la malla
+            obj.material.color.setHex(0xffff00); // Highlight vértice
+        } else {
+            // ES UN OBJETO
+            STATE.mainMesh = obj; // Guardamos referencia
+            highlight(obj, 0xffff00);
+            gizmo.setSpace('local');
         }
     } else {
         gizmo.detach();
     }
 }
 
-function setGizmo(mode) {
-    STATE.gizmoMode = mode;
-    gizmo.setMode(mode);
-}
-
 function toggleMode() {
-    if (!STATE.selectedObj || STATE.selectedObj.userData.isVertex) return;
+    if (!STATE.mainMesh) return; // Necesitamos un objeto activo
 
     if (STATE.mode === 'OBJECT') {
         STATE.mode = 'VERTEX';
-        gizmo.detach(); // Quitamos gizmo del objeto principal
-        STATE.selectedObj.material.wireframe = true;
-        createVertexHelpers(STATE.selectedObj);
+        
+        // 1. Quitar gizmo del objeto grande
+        gizmo.detach();
+        
+        // 2. Mostrar wireframe
+        STATE.mainMesh.material.wireframe = true;
+        
+        // 3. Generar puntos
+        createVertexHelpers(STATE.mainMesh);
+        
+        // 4. Limpiar selección actual para obligar al usuario a elegir un vértice
+        STATE.selected = null;
+        
     } else {
         STATE.mode = 'OBJECT';
-        clearVertexHelpers(STATE.selectedObj);
-        STATE.selectedObj.material.wireframe = false;
-        gizmo.attach(STATE.selectedObj); // Volvemos gizmo al objeto
+        
+        // 1. Limpiar puntos
+        clearVertexHelpers(STATE.mainMesh);
+        STATE.mainMesh.material.wireframe = false;
+        
+        // 2. Reseleccionar el objeto principal
+        select(STATE.mainMesh);
     }
 }
 
-// Helpers de Vértices
+// --- HELPERS VÉRTICES ---
 function createVertexHelpers(mesh) {
     const pos = mesh.geometry.attributes.position;
+    // Usar BoxGeometry pequeña es más eficiente que Sphere para raycasting
+    const helperGeo = new THREE.BoxGeometry(0.02, 0.02, 0.02); 
+    const helperMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+
     for(let i=0; i<pos.count; i++) {
+        const dot = new THREE.Mesh(helperGeo, helperMat.clone());
         const v = new THREE.Vector3().fromBufferAttribute(pos, i);
-        // Crear punto visual
-        const dot = new THREE.Mesh(
-            new THREE.BoxGeometry(0.015, 0.015, 0.015),
-            new THREE.MeshBasicMaterial({ color: 0x00ff00 })
-        );
-        // Posicionar en local
-        dot.position.copy(v);
+        
+        dot.position.copy(v); // Posición LOCAL
         dot.userData = { isVertex: true, index: i, parentMesh: mesh };
-        mesh.add(dot); // Añadimos como hijo para que siga al objeto
+        
+        mesh.add(dot); // IMPORTANTE: Hijo del mesh para heredar transforms
     }
 }
 
 function clearVertexHelpers(mesh) {
-    // Borrar hijos que sean vértices
     for(let i = mesh.children.length - 1; i >= 0; i--) {
         if(mesh.children[i].userData.isVertex) {
-            mesh.remove(mesh.children[i]);
+            const child = mesh.children[i];
+            child.geometry.dispose();
+            child.material.dispose();
+            mesh.remove(child);
         }
     }
 }
 
+// --- ACTUALIZACIÓN DE GEOMETRÍA ---
 function updateVertexGeo(dot) {
     const mesh = dot.userData.parentMesh;
     const idx = dot.userData.index;
     const posAttr = mesh.geometry.attributes.position;
     
-    // dot.position ya es local porque es hijo del mesh
+    // Como 'dot' es hijo de 'mesh', dot.position ya está en coordenadas locales del mesh.
+    // Simplemente copiamos al buffer.
     posAttr.setXYZ(idx, dot.position.x, dot.position.y, dot.position.z);
+    
     posAttr.needsUpdate = true;
+    mesh.geometry.computeBoundingSphere(); // Para frustum culling correcto
+    // Opcional: Recalcular normales es costoso, hazlo solo si es necesario visualmente
+    // mesh.geometry.computeVertexNormals(); 
+}
+
+// --- UTILS ---
+function setGizmo(mode) {
+    STATE.gizmoMode = mode;
+    gizmo.setMode(mode);
 }
 
 function deleteSelected() {
-    if (STATE.selectedObj) {
-        if (STATE.selectedObj.userData.isVertex) return; // No borrar vértices sueltos
+    if (STATE.selected) {
+        if (STATE.selected.userData.isVertex) return; // No borrar vértices individuales
         gizmo.detach();
-        scene.remove(STATE.selectedObj);
-        const i = objects.indexOf(STATE.selectedObj);
+        scene.remove(STATE.selected);
+        const i = objects.indexOf(STATE.selected);
         if(i>-1) objects.splice(i,1);
-        STATE.selectedObj = null;
+        STATE.selected = null;
+        STATE.mainMesh = null;
     }
 }
 
-// Helpers Visuales
 function setHover(btn) {
     if (STATE.hoveredBtn === btn) return;
     if (STATE.hoveredBtn) {
@@ -452,6 +452,7 @@ function pulseBtn(btn) {
 }
 
 function highlight(obj, color) {
+    if (!obj.material) return;
     if (!obj.material.emissive) return;
     if (color) obj.material.emissive.setHex(0x333333);
     else obj.material.emissive.setHex(0x000000);
