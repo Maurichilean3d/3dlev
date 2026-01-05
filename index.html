@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MR Studio: Solid Link</title>
+    <title>MR Studio: Solid Vertices</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; font-family: sans-serif; color: #fff; }
         #overlay {
@@ -16,21 +16,15 @@
             border-radius: 12px; font-weight: bold; cursor: pointer; color: white;
             box-shadow: 0 0 20px rgba(0,136,255,0.5);
         }
-        .instr { margin-top: 20px; color: #aaa; font-size: 14px; text-align: center; max-width: 400px; }
+        .instr { margin-top: 20px; color: #aaa; font-size: 14px; text-align: center; }
     </style>
 </head>
 <body>
 
 <div id="overlay">
-    <h1>MR STUDIO: SOLID LINK</h1>
-    <p>Corrección: Las esquinas ya no se separan al moverlas.</p>
+    <h1>MR STUDIO: SOLID VERTICES</h1>
+    <p>Corrección: Las esquinas ahora son sólidas e indivisibles.</p>
     <button id="btn-start">INICIAR</button>
-    <div class="instr">
-        1. Crea un Cubo.<br>
-        2. Activa OBJ/VERT.<br>
-        3. Agarra una esquina con el GRIP (Lateral).<br>
-        Notarás que se mueve toda la esquina sólida.
-    </div>
 </div>
 
 <script type="importmap">
@@ -45,7 +39,6 @@
 <script type="module">
 import * as THREE from 'three';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
-import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
 // ==========================================
 // 1. MOTOR
@@ -55,17 +48,16 @@ let ctrlRight, gripLeft;
 let uiGroup; 
 const uiButtons = []; 
 const objects = []; 
-let gizmo; 
 
-// Selector Táctil
+// Variables Interacción
 let selectorSphere;
 const SELECTOR_RADIUS = 0.05; 
 
 // Variables reutilizables
-const _ray = new THREE.Raycaster();
-const _mat = new THREE.Matrix4();
 const _tempVecA = new THREE.Vector3();
 const _tempVecB = new THREE.Vector3();
+const _ray = new THREE.Raycaster();
+const _mat = new THREE.Matrix4();
 
 // ESTADO
 const STATE = {
@@ -75,10 +67,7 @@ const STATE = {
     mode: 'OBJECT',      
     grabbedElement: null, 
     menuAttached: false,
-    closestVertex: null,
-    
-    // Aquí guardaremos los índices de vértices que son gemelos
-    coincidentMap: [] // Array de Arrays
+    closestVertex: null
 };
 
 init();
@@ -100,15 +89,6 @@ function init() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.xr.enabled = true;
     document.body.appendChild(renderer.domElement);
-
-    // GIZMO (Para gatillo)
-    gizmo = new TransformControls(camera, renderer.domElement);
-    gizmo.addEventListener('change', () => {
-        if (STATE.mode === 'VERTEX' && STATE.selected && STATE.selected.userData.isVertex) {
-            updateVertexGroupPosition(STATE.selected);
-        }
-    });
-    scene.add(gizmo);
 
     setupControllers();
     createWristUI();
@@ -229,9 +209,7 @@ function onGripStart() {
     if (STATE.mode === 'VERTEX' && STATE.closestVertex) {
         STATE.grabbedElement = STATE.closestVertex;
         ctrlRight.attach(STATE.grabbedElement); // Pegar a la mano
-        
-        // Highlight para todo el grupo de gemelos
-        highlightCoincidentVertices(STATE.grabbedElement, 0xffffff); // Blanco
+        STATE.grabbedElement.material.color.setHex(0xffffff); // Blanco
         return;
     }
 
@@ -253,10 +231,10 @@ function onGripEnd() {
             // Volver a pegar el punto al mesh
             mesh.attach(dot);
             
-            // Actualizar posición final geométrica de TODOS los gemelos
-            updateVertexGroupPosition(dot);
+            // Actualizar geometría sólida
+            updateSolidVertex(dot);
             
-            highlightCoincidentVertices(dot, 0xffff00); // Volver a amarillo
+            dot.material.color.setHex(0xffff00); 
         } 
         // B. Soltar OBJETO
         else {
@@ -287,9 +265,9 @@ function render() {
         // Proximidad de vértices
         checkProximitySelection();
         
-        // Si estamos arrastrando con la mano (Grip), actualizar geometría en tiempo real
+        // Si estamos arrastrando
         if (STATE.grabbedElement && STATE.grabbedElement.userData.isVertex) {
-            updateVertexGroupPosition(STATE.grabbedElement);
+            updateSolidVertex(STATE.grabbedElement);
         }
     }
 
@@ -297,15 +275,15 @@ function render() {
 }
 
 // ==========================================
-// 5. LÓGICA DE VÉRTICES VINCULADOS (LA SOLUCIÓN)
+// 5. LÓGICA DE VÉRTICES SÓLIDOS (SOLUCIÓN)
 // ==========================================
 
 function spawn(type) {
     const geo = (type==='box') ? new THREE.BoxGeometry(0.2,0.2,0.2) : new THREE.SphereGeometry(0.15,16,12);
-    const mat = new THREE.MeshStandardMaterial({ color: Math.random()*0xffffff, roughness: 0.4, flatShading: true }); // flatShading importante para ver bordes
+    // Flat shading para ver los polígonos
+    const mat = new THREE.MeshStandardMaterial({ color: Math.random()*0xffffff, roughness: 0.4, flatShading: true }); 
     const mesh = new THREE.Mesh(geo, mat);
     
-    // SPAWN FRENTE A LA CARA
     const camPos = new THREE.Vector3();
     const camQuat = new THREE.Quaternion();
     camera.matrixWorld.decompose(camPos, camQuat, new THREE.Vector3());
@@ -322,84 +300,67 @@ function spawn(type) {
     select(mesh);
 }
 
-function createVertexHelpers(mesh) {
-    const pos = mesh.geometry.attributes.position;
+// *** MAGIA: CREAR UN SOLO MANEJADOR POR POSICIÓN ***
+function createUniqueVertexHelpers(mesh) {
+    const posAttr = mesh.geometry.attributes.position;
     const geo = new THREE.BoxGeometry(0.015, 0.015, 0.015);
     const baseMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
     
-    // 1. Crear los puntos visuales
-    for(let i=0; i<pos.count; i++) {
-        const dot = new THREE.Mesh(geo, baseMat.clone());
-        const v = new THREE.Vector3().fromBufferAttribute(pos, i);
-        dot.position.copy(v);
-        dot.userData = { isVertex: true, index: i, parentMesh: mesh, coincidentIndices: [] };
-        mesh.add(dot);
+    // Mapa: "x_y_z" -> [index1, index2, index3]
+    const uniquePositions = {};
+
+    // 1. Agrupar vértices por posición
+    for(let i=0; i<posAttr.count; i++) {
+        const x = posAttr.getX(i);
+        const y = posAttr.getY(i);
+        const z = posAttr.getZ(i);
+        
+        // Clave única basada en posición (con precisión de 4 decimales)
+        const key = `${x.toFixed(4)}_${y.toFixed(4)}_${z.toFixed(4)}`;
+        
+        if (!uniquePositions[key]) uniquePositions[key] = [];
+        uniquePositions[key].push(i);
     }
 
-    // 2. CALCULAR COINCIDENCIAS (VINCULAR VÉRTICES)
-    // Esto detecta qué vértices están en la misma posición (esquinas del cubo)
-    // y guarda sus índices para moverlos juntos.
-    mesh.updateMatrixWorld();
-    
-    const dots = mesh.children.filter(c => c.userData.isVertex);
-    
-    for (let i = 0; i < dots.length; i++) {
-        const dotA = dots[i];
-        const posA = dotA.position;
-        const group = [dotA.userData.index]; // Empezamos con nosotros mismos
-
-        for (let j = 0; j < dots.length; j++) {
-            if (i === j) continue;
-            const dotB = dots[j];
-            const posB = dotB.position;
-            
-            // Si están extremadamente cerca (casi cero), son gemelos
-            if (posA.distanceTo(posB) < 0.0001) {
-                group.push(dotB.userData.index);
-            }
-        }
-        // Guardar la lista de hermanos en el objeto para acceso rápido
-        dot.userData.coincidentIndices = group;
+    // 2. Crear UN SOLO punto verde por clave
+    for (const key in uniquePositions) {
+        const indices = uniquePositions[key];
+        
+        // Usamos la posición del primer índice como referencia
+        const idx0 = indices[0];
+        const v = new THREE.Vector3().fromBufferAttribute(posAttr, idx0);
+        
+        const dot = new THREE.Mesh(geo, baseMat.clone());
+        dot.position.copy(v);
+        
+        // Guardamos TODOS los índices vinculados a este punto
+        dot.userData = { 
+            isVertex: true, 
+            indices: indices, // Array de índices reales 
+            parentMesh: mesh 
+        };
+        
+        mesh.add(dot);
     }
 }
 
-// Mueve el vértice principal Y todos sus gemelos
-function updateVertexGroupPosition(masterDot) {
-    const mesh = masterDot.userData.parentMesh;
+// Mueve TODOS los vértices vinculados a este manejador
+function updateSolidVertex(dot) {
+    const mesh = dot.userData.parentMesh;
     const posAttr = mesh.geometry.attributes.position;
-    const indices = masterDot.userData.coincidentIndices;
+    const indices = dot.userData.indices; // Array de indices (e.g. [0, 4, 12])
     
-    // Nueva posición (local)
-    const newPos = masterDot.position;
+    // Nueva posición (local) del manejador
+    const newPos = dot.position;
 
-    // Actualizar datos de geometría
+    // Aplicar a todos los "gemelos"
     indices.forEach(idx => {
         posAttr.setXYZ(idx, newPos.x, newPos.y, newPos.z);
-        
-        // Actualizar visualmente los otros puntos verdes (para que no se queden atrás)
-        // Buscamos el objeto visual correspondiente al index
-        const siblingDot = mesh.children.find(c => c.userData.isVertex && c.userData.index === idx);
-        if (siblingDot && siblingDot !== masterDot) {
-            siblingDot.position.copy(newPos);
-        }
     });
 
     posAttr.needsUpdate = true;
     mesh.geometry.computeBoundingSphere();
-}
-
-function highlightCoincidentVertices(masterDot, colorHex) {
-    const mesh = masterDot.userData.parentMesh;
-    const indices = masterDot.userData.coincidentIndices;
-    
-    indices.forEach(idx => {
-        const siblingDot = mesh.children.find(c => c.userData.isVertex && c.userData.index === idx);
-        if (siblingDot) {
-            siblingDot.material.color.setHex(colorHex);
-            if(colorHex === 0xffffff) siblingDot.scale.set(1.5,1.5,1.5); // Feedback al agarrar
-            else siblingDot.scale.set(1,1,1);
-        }
-    });
+    // Opcional: mesh.geometry.computeVertexNormals(); // Si quieres shading suave dinámico
 }
 
 // ==========================================
@@ -415,12 +376,12 @@ function checkRaycastSelection() {
 function select(obj) {
     if (STATE.selected === obj) return;
     if (STATE.selected) {
-        if(STATE.selected.userData.isVertex) highlightCoincidentVertices(STATE.selected, 0x00ff00);
+        if(STATE.selected.userData.isVertex) STATE.selected.material.color.setHex(0x00ff00);
         else STATE.selected.material.emissive.setHex(0x000000);
     }
     STATE.selected = obj;
     if (obj) {
-        if (obj.userData.isVertex) highlightCoincidentVertices(obj, 0xffff00);
+        if (obj.userData.isVertex) obj.material.color.setHex(0xffff00);
         else obj.material.emissive.setHex(0x333333);
     }
 }
@@ -433,6 +394,7 @@ function checkProximitySelection() {
     let minDist = SELECTOR_RADIUS;
     let closest = null;
 
+    // Buscar entre los manejadores únicos
     for (let child of STATE.mainMesh.children) {
         if (!child.userData.isVertex) continue;
         child.getWorldPosition(_tempVecB);
@@ -441,11 +403,14 @@ function checkProximitySelection() {
     }
 
     if (closest !== STATE.closestVertex) {
-        // Limpiar anterior
-        if (STATE.closestVertex) highlightCoincidentVertices(STATE.closestVertex, 0x00ff00);
-        // Iluminar nuevo grupo
-        if (closest) highlightCoincidentVertices(closest, 0xffff00);
-        
+        if (STATE.closestVertex) {
+            STATE.closestVertex.material.color.setHex(0x00ff00);
+            STATE.closestVertex.scale.set(1,1,1);
+        }
+        if (closest) {
+            closest.material.color.setHex(0xffff00);
+            closest.scale.set(1.5, 1.5, 1.5);
+        }
         STATE.closestVertex = closest;
     }
 }
@@ -458,7 +423,8 @@ function toggleMode() {
         STATE.mode = 'VERTEX';
         STATE.mainMesh = target;
         target.material.wireframe = true;
-        createVertexHelpers(target); // Aquí se calculan los gemelos
+        // Usar la nueva función de helpers únicos
+        createUniqueVertexHelpers(target); 
         select(null);
     } else {
         STATE.mode = 'OBJECT';
