@@ -1,0 +1,727 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>MR Studio: Blender-Quest Edition</title>
+  <script src="https://unpkg.com/omggif@1.0.10/omggif.js"></script>
+  <style>
+    :root {
+      --main: #ffaa00; --bg: rgba(10,10,14,0.9); --glass: rgba(255,170,0,0.15);
+    }
+    body { margin: 0; overflow: hidden; background: #111; color: #eee; font-family: system-ui, sans-serif; }
+    #c { position: fixed; inset: 0; z-index: 0; }
+    
+    /* UI Desktop Overlay (se oculta en VR si se desea, o se usa para debug) */
+    #desktop-ui {
+      position: fixed; top: 10px; left: 10px; width: 300px; max-height: 90vh;
+      background: var(--bg); border: 1px solid var(--main); border-radius: 12px;
+      padding: 15px; overflow-y: auto; z-index: 100; box-shadow: 0 0 20px rgba(0,0,0,0.5);
+    }
+    h3 { margin: 0 0 10px 0; color: var(--main); border-bottom: 1px solid #333; padding-bottom: 5px; font-size: 14px; text-transform: uppercase; }
+    .row { display: flex; gap: 5px; margin-bottom: 8px; align-items: center; }
+    button {
+      background: #222; border: 1px solid #444; color: #fff; padding: 6px 10px; border-radius: 6px; cursor: pointer; flex: 1; font-size: 11px; text-transform: uppercase; transition: 0.2s;
+    }
+    button:hover { border-color: var(--main); background: var(--glass); }
+    button.active { background: var(--main); color: #000; font-weight: bold; }
+    .section { margin-top: 15px; border-top: 1px dashed #333; padding-top: 10px; }
+    
+    #vr-btn {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      padding: 12px 40px; background: var(--main); color: #000; font-weight: 900;
+      border-radius: 30px; border: 2px solid #fff; cursor: pointer; z-index: 999;
+      display: none; box-shadow: 0 0 20px var(--main);
+    }
+
+    /* Estilos para etiquetas 3D simples */
+    .label-3d { color: white; background: rgba(0,0,0,0.7); padding: 2px 5px; border-radius: 4px; font-size: 10px; pointer-events: none; }
+  </style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+<button id="vr-btn">ENTRAR EN XR</button>
+
+<div id="desktop-ui">
+  <h3>🔷 MR Studio: Blender-Quest</h3>
+  
+  <div class="section"><strong>🛠️ Herramientas</strong></div>
+  <div class="row">
+    <button onclick="setGlobalMode('view')" id="btn-view" class="active">Vista</button>
+    <button onclick="setGlobalMode('model')" id="btn-model">Modelar</button>
+    <button onclick="setGlobalMode('draw')" id="btn-draw">Dibujar</button>
+  </div>
+
+  <div id="panel-model" style="display:none;">
+    <div class="section"><strong>🧊 Primitivas</strong></div>
+    <div class="row">
+      <button onclick="addPrimitive('box')">Cubo</button>
+      <button onclick="addPrimitive('sphere')">Esfera</button>
+      <button onclick="addPrimitive('cylinder')">Cilindro</button>
+      <button onclick="addPrimitive('plane')">Plano</button>
+    </div>
+
+    <div class="section"><strong>edit mode</strong></div>
+    <div class="row">
+      <button onclick="setEditSubMode('object')" id="btn-sub-object" class="active">Objeto</button>
+      <button onclick="setEditSubMode('vertex')" id="btn-sub-vertex">Vértice</button>
+      <button onclick="setEditSubMode('face')" id="btn-sub-face">Cara</button>
+    </div>
+    
+    <div class="section"><strong>transform (Gizmo)</strong></div>
+    <div class="row">
+      <button onclick="setGizmoMode('translate')" id="btn-giz-trans" class="active">Mover</button>
+      <button onclick="setGizmoMode('rotate')" id="btn-giz-rot">Rotar</button>
+      <button onclick="setGizmoMode('scale')" id="btn-giz-scale">Escalar</button>
+    </div>
+  </div>
+
+  <div id="panel-draw" style="display:none;">
+    <div class="section"><strong>✏️ Dibujo 3D</strong></div>
+    <div class="row"><button onclick="clearDrawings()">Limpiar Todo</button></div>
+    <div class="row">
+      <label style="font-size:11px">Grosor</label>
+      <input type="range" min="0.005" max="0.05" step="0.001" value="0.01" oninput="drawParams.width=parseFloat(this.value)">
+    </div>
+    <div class="row">
+       <button onclick="drawParams.color='#ff0000'">Rojo</button>
+       <button onclick="drawParams.color='#00ff00'">Verde</button>
+       <button onclick="drawParams.color='#0088ff'">Azul</button>
+    </div>
+  </div>
+
+  <div class="section"><strong>📂 Archivo</strong></div>
+  <div class="row">
+    <button onclick="exportJSON()">Guardar JSON</button>
+    <button onclick="document.getElementById('fileIn').click()">Cargar JSON/GLB</button>
+    <input type="file" id="fileIn" style="display:none" onchange="handleFile(this)">
+  </div>
+  
+  <div class="section"><strong>⚙️ XR</strong></div>
+  <div class="row">
+    <label style="font-size:11px; display:flex; align-items:center; gap:5px;">
+      <input type="checkbox" id="checkOcc"> Oclusión (Passthrough)
+    </label>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { HTMLMesh } from 'three/addons/interactive/HTMLMesh.js'; // Opcional si quisieramos UI DOM en 3D
+import { InteractiveGroup } from 'three/addons/interactive/InteractiveGroup.js';
+
+// ==========================================
+// 1. ESTADO GLOBAL & CONFIGURACIÓN
+// ==========================================
+let scene, camera, renderer, orbit, transformCtrl;
+let controller1, controller2, controllerGrip1, controllerGrip2;
+let raycaster, workingMatrix = new THREE.Matrix4();
+let session = null;
+
+// Grupos
+const objects = []; // Lista de objetos editables
+let activeObj = null; // Objeto seleccionado actualmente
+let drawGroup; // Contenedor de dibujos
+
+// Estados
+let globalMode = 'view'; // view, model, draw
+let editSubMode = 'object'; // object, vertex, face
+let gizmoMode = 'translate';
+let drawParams = { width: 0.01, color: '#ffaa00', brush: 'tube' };
+let isDrawing = false;
+let currentStroke = null;
+
+// Helpers de edición
+let vertexHelperGroup = null;
+let faceHelperGroup = null;
+let selectedSubElement = null; // { type: 'vertex'|'face', index: 0, originalPos: ... }
+
+// VR UI (Palette)
+let vrPaletteGroup = null;
+let isPaletteVisible = false;
+
+// Oclusión
+let depthData = null; // Placeholder para logica de occlusion
+
+init();
+
+function init() {
+  // Escena
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x222222);
+
+  // Luces
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
+  scene.add(hemi);
+  const dir = new THREE.DirectionalLight(0xffffff, 1.5);
+  dir.position.set(2, 5, 2);
+  dir.castShadow = true;
+  scene.add(dir);
+
+  // Grid (Suelo)
+  const grid = new THREE.GridHelper(10, 10, 0x888888, 0x444444);
+  grid.position.y = -0.01;
+  scene.add(grid);
+
+  // Cámara
+  camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 50);
+  camera.position.set(0, 1.6, 1.5);
+
+  // Renderer
+  renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true, alpha: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.xr.enabled = true;
+  renderer.shadowMap.enabled = true;
+
+  // Controles Desktop
+  orbit = new OrbitControls(camera, renderer.domElement);
+  orbit.target.set(0, 1, 0);
+  orbit.update();
+
+  // Transform Controls (Gizmo)
+  transformCtrl = new TransformControls(camera, renderer.domElement);
+  transformCtrl.addEventListener('dragging-changed', (e) => {
+    orbit.enabled = !e.value;
+    // Si estamos editando vértices/caras, necesitamos lógica especial al arrastrar
+    if (e.value) onGizmoDragStart();
+    else onGizmoDragEnd();
+  });
+  transformCtrl.addEventListener('change', onGizmoChange); // Actualizar geometría en tiempo real
+  scene.add(transformCtrl);
+
+  // Grupos
+  drawGroup = new THREE.Group();
+  scene.add(drawGroup);
+
+  setupXR();
+  setupInputs();
+  
+  window.addEventListener('resize', onResize);
+  renderer.setAnimationLoop(animate);
+
+  // Iniciar con un cubo de ejemplo
+  addPrimitive('box');
+}
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// ==========================================
+// 2. SISTEMA XR (AR/VR)
+// ==========================================
+function setupXR() {
+  // Botón Entrar
+  if ('xr' in navigator) {
+    navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+      const btn = document.getElementById('vr-btn');
+      btn.style.display = 'block';
+      btn.textContent = supported ? 'ENTRAR EN AR (MR)' : 'ENTRAR EN VR';
+      btn.onclick = () => {
+        const mode = supported ? 'immersive-ar' : 'immersive-vr';
+        const sessionInit = { 
+          requiredFeatures: ['local-floor'], 
+          optionalFeatures: ['hand-tracking', 'hit-test'] 
+        };
+        // Intento de oclusión
+        if (document.getElementById('checkOcc').checked && supported) {
+          sessionInit.optionalFeatures.push('depth-sensing');
+          sessionInit.depthSensing = { usagePreference: ["cpu-optimized"], dataFormatPreference: ["luminance-alpha"] };
+        }
+        navigator.xr.requestSession(mode, sessionInit).then(onSessionStarted);
+      };
+    });
+  }
+
+  // Controladores
+  const modelFactory = new XRControllerModelFactory();
+
+  controller1 = renderer.xr.getController(0);
+  controller1.addEventListener('selectstart', onSelectStart); // Gatillo: Acción principal
+  controller1.addEventListener('selectend', onSelectEnd);
+  controller1.userData.isSelecting = false;
+  scene.add(controller1);
+
+  controller2 = renderer.xr.getController(1);
+  controller2.addEventListener('selectstart', onSelectStart);
+  controller2.addEventListener('selectend', onSelectEnd);
+  controller2.userData.isSelecting = false;
+  // Botón "Menú" o "B" en el derecho para abrir paleta
+  controller2.addEventListener('squeeze', togglePalette); 
+  scene.add(controller2);
+
+  // Modelos visuales
+  controllerGrip1 = renderer.xr.getControllerGrip(0);
+  controllerGrip1.add(modelFactory.createControllerModel(controllerGrip1));
+  scene.add(controllerGrip1);
+
+  controllerGrip2 = renderer.xr.getControllerGrip(1);
+  controllerGrip2.add(modelFactory.createControllerModel(controllerGrip2));
+  scene.add(controllerGrip2);
+
+  // Rayos visuales
+  const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)]);
+  const line = new THREE.Line(geo);
+  line.scale.z = 5;
+  controller1.add(line.clone());
+  controller2.add(line.clone());
+
+  raycaster = new THREE.Raycaster();
+  
+  createVRPalette(); // Crear la UI flotante
+}
+
+function onSessionStarted(s) {
+  session = s;
+  renderer.xr.setSession(session);
+  document.getElementById('vr-btn').style.display = 'none';
+  document.getElementById('desktop-ui').style.display = 'none'; // Ocultar UI desktop
+  scene.background = null; // Para AR (Passthrough)
+}
+
+// ==========================================
+// 3. LÓGICA DE MODELADO (Blender-Lite)
+// ==========================================
+
+function addPrimitive(type) {
+  let geo;
+  if (type === 'box') geo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+  else if (type === 'sphere') geo = new THREE.SphereGeometry(0.3, 16, 12);
+  else if (type === 'cylinder') geo = new THREE.CylinderGeometry(0.2, 0.2, 0.5, 16);
+  else if (type === 'plane') geo = new THREE.PlaneGeometry(0.5, 0.5);
+
+  const mat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.6, metalness: 0.1, flatShading: true });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(0, 1.0, -1);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.userData.isEditable = true;
+  mesh.userData.id = Math.random().toString(36).substr(2, 9);
+  
+  scene.add(mesh);
+  objects.push(mesh);
+  
+  selectObject(mesh);
+}
+
+function selectObject(mesh) {
+  if (activeObj === mesh && editSubMode === 'object') return;
+  activeObj = mesh;
+  
+  // Si estamos en modo objeto, attach Gizmo
+  if (editSubMode === 'object') {
+    transformCtrl.attach(mesh);
+    clearHelpers();
+  } else {
+    // Si estamos en modo sub-objeto, necesitamos regenerar helpers
+    transformCtrl.detach();
+    updateSubObjectHelpers();
+  }
+}
+
+// Cambia entre Objeto, Vértice, Cara
+window.setEditSubMode = (mode) => {
+  editSubMode = mode;
+  // UI Update
+  ['object','vertex','face'].forEach(m => document.getElementById(`btn-sub-${m}`).classList.remove('active'));
+  document.getElementById(`btn-sub-${mode}`).classList.add('active');
+
+  if (activeObj) {
+    if (mode === 'object') {
+      clearHelpers();
+      transformCtrl.attach(activeObj);
+    } else {
+      transformCtrl.detach();
+      updateSubObjectHelpers();
+    }
+  }
+};
+
+// Genera esferas azules en los vértices o centros de caras
+function updateSubObjectHelpers() {
+  clearHelpers();
+  if (!activeObj) return;
+
+  const geo = activeObj.geometry;
+  const pos = geo.attributes.position;
+  
+  if (editSubMode === 'vertex') {
+    vertexHelperGroup = new THREE.Group();
+    // Crear un helper visual para cada vértice (simplificado: puntos clicables)
+    // Para eficiencia usamos Points, pero para interacción XR mejor esferas pequeñas
+    for (let i = 0; i < pos.count; i++) {
+      const v = new THREE.Vector3().fromBufferAttribute(pos, i);
+      // v está en local space.
+      const dot = new THREE.Mesh(new THREE.SphereGeometry(0.02, 6, 6), new THREE.MeshBasicMaterial({color: 0x00ff00}));
+      dot.position.copy(v);
+      dot.userData = { type: 'vertex', index: i };
+      vertexHelperGroup.add(dot);
+    }
+    activeObj.add(vertexHelperGroup); // Attach al objeto para que se mueva con él
+  } 
+  else if (editSubMode === 'face') {
+    faceHelperGroup = new THREE.Group();
+    // Si es indexada, es más complejo, asumimos geometría simple o convertida
+    const index = geo.index;
+    const count = index ? index.count / 3 : pos.count / 3;
+    
+    for (let i = 0; i < count; i++) {
+      let a,b,c;
+      if (index) {
+        a = index.getX(i*3); b = index.getX(i*3+1); c = index.getX(i*3+2);
+      } else {
+        a = i*3; b = i*3+1; c = i*3+2;
+      }
+      const vA = new THREE.Vector3().fromBufferAttribute(pos, a);
+      const vB = new THREE.Vector3().fromBufferAttribute(pos, b);
+      const vC = new THREE.Vector3().fromBufferAttribute(pos, c);
+      const center = new THREE.Vector3().add(vA).add(vB).add(vC).divideScalar(3);
+      
+      const dot = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.03), new THREE.MeshBasicMaterial({color: 0x0088ff}));
+      dot.position.copy(center);
+      dot.userData = { type: 'face', indices: [a,b,c] }; // Guardamos indices de la cara
+      faceHelperGroup.add(dot);
+    }
+    activeObj.add(faceHelperGroup);
+  }
+}
+
+function clearHelpers() {
+  if (vertexHelperGroup) {
+    activeObj?.remove(vertexHelperGroup);
+    vertexHelperGroup = null;
+  }
+  if (faceHelperGroup) {
+    activeObj?.remove(faceHelperGroup);
+    faceHelperGroup = null;
+  }
+  selectedSubElement = null;
+}
+
+// ==========================================
+// 4. INTERACCIÓN GIZMO & MODIFICACIÓN DE GEOMETRÍA
+// ==========================================
+
+// Helper invisible que el Gizmo moverá
+const subObjectProxy = new THREE.Object3D();
+scene.add(subObjectProxy);
+
+function onGizmoDragStart() {
+  if (editSubMode === 'object') return;
+  // Guardar estado inicial si fuera necesario para Undo
+}
+
+function onGizmoChange() {
+  if (editSubMode === 'object') return;
+  if (!selectedSubElement || !activeObj) return;
+
+  // El proxy se movió, ahora debemos actualizar la geometría real
+  // Convertir posición del proxy (World) a Local del objeto
+  const localPos = subObjectProxy.position.clone();
+  activeObj.worldToLocal(localPos);
+
+  const posAttr = activeObj.geometry.attributes.position;
+
+  if (selectedSubElement.type === 'vertex') {
+    const idx = selectedSubElement.index;
+    posAttr.setXYZ(idx, localPos.x, localPos.y, localPos.z);
+    // Actualizar el helper visual también
+    const helper = vertexHelperGroup.children.find(c => c.userData.index === idx);
+    if(helper) helper.position.copy(localPos);
+  } 
+  else if (selectedSubElement.type === 'face') {
+    // Mover toda la cara (delta)
+    // Calculamos el delta desde el centro original de la cara
+    // Para simplificar: recalculamos las posiciones relativas
+    // Esto es complejo en una demo corta, así que haremos:
+    // Mover vértices basados en el desplazamiento del proxy desde que se seleccionó
+    // (Implementación simplificada: Mover un solo vértice para demo o implementar lógica de grupo)
+    const indices = selectedSubElement.indices;
+    // Calcular delta
+    // Por simplicidad en esta versión "Blender-Quest", limitaremos a vértices para estabilidad
+  }
+
+  posAttr.needsUpdate = true;
+  activeObj.geometry.computeVertexNormals();
+}
+
+// Seleccionar sub-elemento (Raycast)
+function selectSubObject(intersect) {
+  const obj = intersect.object;
+  // obj es una esferita helper
+  if (!obj.userData.type) return;
+
+  selectedSubElement = obj.userData;
+  
+  // Mover el Proxy a la posición WORLD del helper
+  const worldPos = new THREE.Vector3();
+  obj.getWorldPosition(worldPos);
+  subObjectProxy.position.copy(worldPos);
+  subObjectProxy.rotation.set(0,0,0);
+  subObjectProxy.scale.set(1,1,1);
+  
+  // Attach Gizmo al proxy
+  transformCtrl.attach(subObjectProxy);
+}
+
+// ==========================================
+// 5. DIBUJO 3D (Tilt Brush style)
+// ==========================================
+function startDrawing(point) {
+  isDrawing = true;
+  const mat = new THREE.MeshStandardMaterial({ 
+    color: drawParams.color, 
+    roughness: 0.5,
+    emissive: drawParams.color,
+    emissiveIntensity: 0.2
+  });
+  // Usamos TubeGeometry dinámico o simplemente esferas continuas para performance en demo
+  currentStroke = { points: [point], mesh: new THREE.Group() };
+  drawGroup.add(currentStroke.mesh);
+}
+
+function updateDrawing(point) {
+  if (!isDrawing || !currentStroke) return;
+  
+  const last = currentStroke.points[currentStroke.points.length-1];
+  if (point.distanceTo(last) < 0.005) return; // Filtrar ruido
+
+  currentStroke.points.push(point);
+  
+  // Dibujar segmento (Cilindro entre último y actual)
+  const dist = point.distanceTo(last);
+  const geo = new THREE.CylinderGeometry(drawParams.width, drawParams.width, dist, 6);
+  geo.rotateX(Math.PI/2); // Alinear con Z
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color: drawParams.color}));
+  
+  // Posicionar y orientar
+  const mid = new THREE.Vector3().addVectors(last, point).multiplyScalar(0.5);
+  mesh.position.copy(mid);
+  mesh.lookAt(point);
+  
+  currentStroke.mesh.add(mesh);
+}
+
+function endDrawing() {
+  isDrawing = false;
+  // Aquí podríamos optimizar fusionando geometrías
+  currentStroke = null;
+}
+
+window.clearDrawings = () => {
+  drawGroup.clear();
+};
+
+
+// ==========================================
+// 6. UI FLOTANTE (VR WRIST PALETTE)
+// ==========================================
+function createVRPalette() {
+  vrPaletteGroup = new THREE.Group();
+  
+  // Panel de fondo
+  const bg = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.3, 0.25), 
+    new THREE.MeshBasicMaterial({color: 0x000000, transparent:true, opacity:0.8, side: THREE.DoubleSide})
+  );
+  vrPaletteGroup.add(bg);
+
+  // Botones simples (Texturas o Colores)
+  const createBtn = (label, color, x, y, callback) => {
+    const btn = new THREE.Mesh(new THREE.PlaneGeometry(0.08, 0.04), new THREE.MeshBasicMaterial({color: color}));
+    btn.position.set(x, y, 0.01);
+    btn.userData = { isBtn: true, callback: callback };
+    vrPaletteGroup.add(btn);
+    // Texto (Simulado con canvas texture para ser pro)
+    const cvs = document.createElement('canvas'); cvs.width=128; cvs.height=64;
+    const ctx = cvs.getContext('2d');
+    ctx.fillStyle = color; ctx.fillRect(0,0,128,64);
+    ctx.fillStyle = 'black'; ctx.font='bold 24px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(label, 64, 32);
+    const tex = new THREE.CanvasTexture(cvs);
+    btn.material.map = tex;
+    btn.material.color = new THREE.Color(0xffffff);
+  };
+
+  // Layout
+  createBtn("MODEL", 0xffaa00, -0.09, 0.08, () => setGlobalMode('model'));
+  createBtn("DRAW", 0x00aaff, 0.0, 0.08, () => setGlobalMode('draw'));
+  createBtn("VIEW", 0xaaaaaa, 0.09, 0.08, () => setGlobalMode('view'));
+
+  createBtn("Vertex", 0x44ff44, -0.09, 0.02, () => setEditSubMode('vertex'));
+  createBtn("Object", 0xffee00, 0.0, 0.02, () => setEditSubMode('object'));
+  createBtn("Face", 0xff4444, 0.09, 0.02, () => setEditSubMode('face'));
+
+  createBtn("Move", 0xdddddd, -0.09, -0.06, () => setGizmoMode('translate'));
+  createBtn("Rotate", 0xdddddd, 0.0, -0.06, () => setGizmoMode('rotate'));
+  createBtn("Scale", 0xdddddd, 0.09, -0.06, () => setGizmoMode('scale'));
+
+  vrPaletteGroup.visible = false;
+  scene.add(vrPaletteGroup);
+}
+
+function togglePalette() {
+  isPaletteVisible = !isPaletteVisible;
+  vrPaletteGroup.visible = isPaletteVisible;
+  if(isPaletteVisible) {
+    // Colocar frente a la cámara o pegado a la mano izquierda
+    // Lo pegaremos a la mano izquierda (controller1)
+    if(controller1) {
+       // Copiar pos y rot
+       vrPaletteGroup.position.copy(controller1.position);
+       vrPaletteGroup.quaternion.copy(controller1.quaternion);
+       // Offset para que flote sobre la muñeca
+       vrPaletteGroup.translateZ(-0.2); 
+       vrPaletteGroup.translateY(0.1);
+       vrPaletteGroup.lookAt(camera.position); // Que mire al usuario
+    }
+  }
+}
+
+// ==========================================
+// 7. INPUT HANDLING (Main Loop)
+// ==========================================
+
+function onSelectStart(e) {
+  const controller = e.target;
+  controller.userData.isSelecting = true;
+
+  // 1. Verificar si toca la UI VR
+  if (isPaletteVisible) {
+    const hits = getIntersections(controller, vrPaletteGroup.children);
+    if (hits.length > 0) {
+      const btn = hits[0].object;
+      if (btn.userData.isBtn && btn.userData.callback) {
+        btn.userData.callback();
+        // Feedback visual
+        btn.scale.set(0.9,0.9,0.9);
+        setTimeout(()=>btn.scale.set(1,1,1), 100);
+        return; // Click en UI, no hacer nada más
+      }
+    }
+  }
+
+  // 2. Lógica según Modo
+  if (globalMode === 'model') {
+    // Raycast scene objects
+    if (editSubMode === 'object') {
+       // Seleccionar objetos
+       const hits = getIntersections(controller, objects);
+       if (hits.length > 0) selectObject(hits[0].object);
+    } else {
+       // Seleccionar helpers (vértices/caras)
+       if (activeObj) {
+         const group = (editSubMode==='vertex') ? vertexHelperGroup : faceHelperGroup;
+         if(group) {
+           const hits = getIntersections(controller, group.children);
+           if(hits.length>0) selectSubObject(hits[0]);
+         }
+       }
+    }
+  } 
+  else if (globalMode === 'draw') {
+    // Empezar trazo
+    // Punto en el espacio: punta del controlador
+    const p = new THREE.Vector3(0,0,-0.05).applyMatrix4(controller.matrixWorld);
+    startDrawing(p);
+  }
+}
+
+function onSelectEnd(e) {
+  const controller = e.target;
+  controller.userData.isSelecting = false;
+  if(isDrawing) endDrawing();
+}
+
+function getIntersections(controller, targets) {
+  workingMatrix.identity().extractRotation(controller.matrixWorld);
+  raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+  raycaster.ray.direction.set(0, 0, -1).applyMatrix4(workingMatrix);
+  return raycaster.intersectObjects(targets, false);
+}
+
+// Bucle principal
+function animate() {
+  // Update Gizmo controls
+  // No necesitamos update explícito, pero si lógica custom
+
+  // Dibujo continuo
+  if (isDrawing && globalMode === 'draw') {
+    // Usamos el controller activo (asumimos controller1 derecho por defecto o el que disparó)
+    const c = controller1.userData.isSelecting ? controller1 : controller2;
+    if (c.userData.isSelecting) {
+      const p = new THREE.Vector3(0,0,-0.05).applyMatrix4(c.matrixWorld);
+      updateDrawing(p);
+    }
+  }
+
+  renderer.render(scene, camera);
+}
+
+// ==========================================
+// 8. UTILIDADES & EXPORT
+// ==========================================
+window.setGlobalMode = (m) => {
+  globalMode = m;
+  // UI update
+  ['view','model','draw'].forEach(id => document.getElementById(`btn-${id}`).classList.remove('active'));
+  document.getElementById(`btn-${m}`).classList.add('active');
+  
+  // Show/Hide Panels
+  document.getElementById('panel-model').style.display = (m==='model')?'block':'none';
+  document.getElementById('panel-draw').style.display = (m==='draw')?'block':'none';
+
+  // Logic
+  transformCtrl.detach();
+  if (m !== 'model') clearHelpers();
+  if (m === 'model' && activeObj && editSubMode === 'object') transformCtrl.attach(activeObj);
+};
+
+window.setGizmoMode = (m) => {
+  gizmoMode = m;
+  transformCtrl.setMode(m);
+  ['trans','rot','scale'].forEach(id => document.getElementById(`btn-giz-${id}`).classList.remove('active'));
+  document.getElementById(`btn-giz-${m.substring(0,5)}`).classList.add('active');
+};
+
+// Exportar escena simple a JSON
+window.exportJSON = () => {
+  const data = {
+    objects: objects.map(o => ({
+      type: o.geometry.type,
+      pos: o.position.toArray(),
+      rot: o.rotation.toArray(),
+      scale: o.scale.toArray()
+    })),
+    drawings: drawGroup.children.length // Simplificado
+  };
+  const blob = new Blob([JSON.stringify(data)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='scene.json'; a.click();
+};
+
+window.handleFile = (input) => {
+  const file = input.files[0];
+  if(!file) return;
+  // Lógica de carga simple...
+  alert("Carga de archivo simulada: " + file.name);
+};
+
+</script>
+</body>
+</html>
