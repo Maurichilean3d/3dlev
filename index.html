@@ -1,10 +1,9 @@
-
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MR Studio: Proximity Touch</title>
+    <title>MR Studio: Fixed Touch</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; font-family: sans-serif; color: #fff; }
         #overlay {
@@ -17,16 +16,16 @@
             border-radius: 12px; font-weight: bold; cursor: pointer; color: white;
             box-shadow: 0 0 20px rgba(0,136,255,0.5);
         }
-        .instr { margin-top: 20px; color: #aaa; font-size: 14px; }
+        .instr { margin-top: 20px; color: #aaa; font-size: 14px; text-align: center; }
     </style>
 </head>
 <body>
 
 <div id="overlay">
-    <h1>MR STUDIO: TOUCH MODE</h1>
-    <p>Usa la esfera roja en tu mano derecha para tocar los vértices.</p>
+    <h1>MR STUDIO: PRECISION TOUCH</h1>
+    <p>Problema "Todo Amarillo" Solucionado.</p>
     <button id="btn-start">ENTRAR</button>
-    <div class="instr">Grip: Rotar Objeto | Gatillo: Mover Gizmo</div>
+    <div class="instr">1. Crea esfera<br>2. Activa OBJ/VERT<br>3. Toca UN punto con la bola roja</div>
 </div>
 
 <script type="importmap">
@@ -53,9 +52,9 @@ const uiButtons = [];
 const objects = []; 
 let gizmo; 
 
-// Selector de Proximidad (La esfera roja)
+// Selector de Proximidad
 let selectorSphere;
-const SELECTOR_RADIUS = 0.05; // Radio de detección (5cm)
+const SELECTOR_RADIUS = 0.06; // 6cm de rango de atracción
 
 // Variables reutilizables
 const _tempVecA = new THREE.Vector3();
@@ -68,10 +67,10 @@ const STATE = {
     hoveredBtn: null,
     selected: null,      
     mainMesh: null,      
-    mode: 'OBJECT',      // 'OBJECT' o 'VERTEX'
+    mode: 'OBJECT',      
     grabbedObj: null,    
     menuAttached: false,
-    closestVertex: null  // El vértice más cercano a la esfera roja
+    closestVertex: null
 };
 
 init();
@@ -121,12 +120,11 @@ function init() {
 }
 
 // ==========================================
-// 2. CONTROLADORES & ESFERA SELECTORA
+// 2. CONTROLADORES
 // ==========================================
 function setupControllers() {
     const modelFactory = new XRControllerModelFactory();
 
-    // DERECHA (Selector)
     const c0 = renderer.xr.getController(0);
     const c1 = renderer.xr.getController(1);
 
@@ -134,22 +132,22 @@ function setupControllers() {
         if (e.data.handedness === 'right') {
             ctrlRight = e.target;
             
-            // --- AQUÍ ESTÁ EL CAMBIO IMPORTANTE ---
-            // En lugar de un láser largo, creamos una esfera "Touch"
-            const geo = new THREE.SphereGeometry(0.015, 16, 16);
-            const mat = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.5 });
+            // ESFERA ROJA (Puntero Táctil)
+            // La hacemos pequeña para que se sienta precisa
+            const geo = new THREE.SphereGeometry(0.008, 16, 16); 
+            const mat = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.6 });
             selectorSphere = new THREE.Mesh(geo, mat);
-            selectorSphere.position.set(0, -0.02, -0.04); // Justo en la punta del dedo virtual
+            // Posicionada ligeramente delante del mando real
+            selectorSphere.position.set(0, -0.01, -0.03); 
             ctrlRight.add(selectorSphere);
 
-            // También dejamos un láser tenue SOLO para la UI
+            // Rayo tenue solo para UI
             const line = new THREE.Line(
                 new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)]),
                 new THREE.LineBasicMaterial({ color: 0x0088ff, opacity: 0.2, transparent: true })
             );
             ctrlRight.add(line);
 
-            // Eventos
             ctrlRight.addEventListener('selectstart', onTriggerStart); 
             ctrlRight.addEventListener('squeezestart', onGripStart);   
             ctrlRight.addEventListener('squeezeend', onGripEnd);       
@@ -160,12 +158,10 @@ function setupControllers() {
     scene.add(c0);
     scene.add(c1);
 
-    // GRIP IZQUIERDO (Menu)
     gripLeft = renderer.xr.getControllerGrip(0);
     gripLeft.add(modelFactory.createControllerModel(gripLeft));
     scene.add(gripLeft);
     
-    // GRIP DERECHO
     const gripRight = renderer.xr.getControllerGrip(1);
     gripRight.add(modelFactory.createControllerModel(gripRight));
     scene.add(gripRight);
@@ -180,8 +176,6 @@ function createWristUI() {
     uiGroup.rotation.set(-Math.PI/2, 0, Math.PI/2);
 
     const bg = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.22), new THREE.MeshBasicMaterial({ color: 0x000000, opacity: 0.8, transparent: true }));
-    const border = new THREE.LineSegments(new THREE.EdgesGeometry(bg.geometry), new THREE.LineBasicMaterial({ color: 0x0088ff }));
-    bg.add(border);
     uiGroup.add(bg);
 
     createBtn('CUBO', 0x0055ff, -0.04, 0.08, () => spawn('box'));
@@ -210,43 +204,53 @@ function createBtn(text, color, x, y, cb) {
 }
 
 // ==========================================
-// 4. LÓGICA DE DETECCIÓN DE PROXIMIDAD
+// 4. LÓGICA MAGNÉTICA (CORREGIDA)
 // ==========================================
 
 function checkProximitySelection() {
-    // Solo funciona en modo Vértice y si tenemos la esfera selectora
+    // Si no estamos en modo vértice o no hay esfera roja, salir
     if (STATE.mode !== 'VERTEX' || !STATE.mainMesh || !selectorSphere) return;
 
-    // Obtener posición mundo de la esfera roja
     selectorSphere.getWorldPosition(_tempVecA);
     
     let minDist = SELECTOR_RADIUS;
     let closest = null;
 
-    // Recorrer los puntos verdes del objeto activo
+    // 1. Encontrar el más cercano
     for (let child of STATE.mainMesh.children) {
         if (!child.userData.isVertex) continue;
 
-        // Obtener posición mundo del punto verde
         child.getWorldPosition(_tempVecB);
         const dist = _tempVecA.distanceTo(_tempVecB);
 
-        // Resetear color
-        if (child !== STATE.selected) child.material.color.setHex(0x00ff00);
-
-        // Chequear colisión
         if (dist < minDist) {
             minDist = dist;
             closest = child;
         }
     }
 
-    STATE.closestVertex = closest;
+    // 2. Actualizar Colores
+    // Recorremos TODOS los puntos para asegurarnos de que solo el cercano sea amarillo
+    for (let child of STATE.mainMesh.children) {
+        if (!child.userData.isVertex) continue;
 
-    // Feedback visual al "hover" (tocar)
-    if (closest && closest !== STATE.selected) {
-        closest.material.color.setHex(0xffff00); // Amarillo = Tocado
+        if (child === closest) {
+            // Este es el "elegido"
+            child.material.color.setHex(0xffff00); // Amarillo
+            // Hacemos que crezca un poco para feedback visual
+            child.scale.set(1.5, 1.5, 1.5);
+        } else if (child === STATE.selected) {
+            // Este es el que ya tenemos seleccionado con el Gizmo
+            child.material.color.setHex(0xff0000); // Rojo
+            child.scale.set(1, 1, 1);
+        } else {
+            // Todos los demás
+            child.material.color.setHex(0x00ff00); // Verde
+            child.scale.set(1, 1, 1);
+        }
     }
+
+    STATE.closestVertex = closest;
 }
 
 // ==========================================
@@ -254,7 +258,7 @@ function checkProximitySelection() {
 // ==========================================
 
 function onTriggerStart() {
-    // 1. UI Click
+    // UI Click
     if (STATE.hoveredBtn) {
         STATE.hoveredBtn.userData.action();
         const b = STATE.hoveredBtn;
@@ -262,19 +266,20 @@ function onTriggerStart() {
         return;
     }
 
-    // 2. Selección por Proximidad (Modo Vértice)
+    // Selección Vértice (Si hay uno cercano amarillo)
     if (STATE.mode === 'VERTEX' && STATE.closestVertex) {
         select(STATE.closestVertex);
         return;
     }
 
-    // 3. Selección Raycast (Modo Objeto)
+    // Selección Objeto (Raycast normal)
     if (STATE.mode === 'OBJECT') {
         checkRaycastSelection();
     }
 }
 
 function onGripStart() {
+    // Agarre Objeto
     if (STATE.selected && !STATE.selected.userData.isVertex) {
         STATE.grabbedObj = STATE.selected;
         gizmo.detach();
@@ -299,7 +304,7 @@ function render() {
     }
 
     if (ctrlRight) {
-        // A. Lógica UI (Raycast siempre activo para botones)
+        // UI Raycast
         _mat.identity().extractRotation(ctrlRight.matrixWorld);
         _ray.ray.origin.setFromMatrixPosition(ctrlRight.matrixWorld);
         _ray.ray.direction.set(0, 0, -1).applyMatrix4(_mat);
@@ -319,7 +324,7 @@ function render() {
             }
         }
 
-        // B. Lógica Proximidad (Solo vértices)
+        // Lógica Proximidad
         checkProximitySelection();
     }
 
@@ -331,46 +336,37 @@ function render() {
 // ==========================================
 
 function spawn(type) {
-    const geo = (type==='box') ? new THREE.BoxGeometry(0.2,0.2,0.2) : new THREE.SphereGeometry(0.15,16,12);
+    const geo = (type==='box') ? new THREE.BoxGeometry(0.2,0.2,0.2) : new THREE.SphereGeometry(0.15,12,8);
     const mat = new THREE.MeshStandardMaterial({ color: Math.random()*0xffffff, roughness: 0.4 });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(0, 1.3, -0.6).applyMatrix4(camera.matrixWorld);
     scene.add(mesh);
     objects.push(mesh);
-    
-    // Si creamos algo nuevo, volvemos a modo objeto para seleccionarlo
     if(STATE.mode === 'VERTEX') toggleMode();
     select(mesh);
 }
 
 function checkRaycastSelection() {
+    // En modo objeto, usamos raycast
     const hits = _ray.intersectObjects(objects, false);
     if (hits.length > 0) select(hits[0].object);
     else select(null);
 }
 
 function select(obj) {
-    if (STATE.selected === obj) return;
-    
-    // Limpiar previo
-    if (STATE.selected) {
-        if(STATE.selected.userData.isVertex) STATE.selected.material.color.setHex(0x00ff00);
-        else if (STATE.selected.material.emissive) STATE.selected.material.emissive.setHex(0x000000);
+    STATE.selected = obj;
+    if (!obj) {
+        gizmo.detach();
+        return;
     }
 
-    STATE.selected = obj;
-
-    if (obj) {
-        gizmo.attach(obj);
-        gizmo.setSpace('local');
-        
-        if (obj.userData.isVertex) {
-            obj.material.color.setHex(0xff0000); // Rojo = SELECCIONADO
-        } else {
-            obj.material.emissive.setHex(0x333333);
-        }
+    gizmo.attach(obj);
+    gizmo.setSpace('local');
+    
+    if (obj.userData.isVertex) {
+        // Si es vértice, ya se colorea en el loop de proximidad (rojo)
     } else {
-        gizmo.detach();
+        obj.material.emissive.setHex(0x333333);
     }
 }
 
@@ -384,7 +380,7 @@ function toggleMode() {
         gizmo.detach();
         target.material.wireframe = true;
         createVertexHelpers(target);
-        select(null); // Soltar objeto para evitar moverlo por error
+        select(null);
     } else {
         STATE.mode = 'OBJECT';
         gizmo.detach();
@@ -396,14 +392,17 @@ function toggleMode() {
     }
 }
 
+// *** AQUÍ ESTABA EL ERROR ANTERIOR ***
 function createVertexHelpers(mesh) {
     const pos = mesh.geometry.attributes.position;
-    // Puntos un poco más grandes para facilitar el toque
-    const geo = new THREE.SphereGeometry(0.015, 8, 8);
-    const mat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+    const geo = new THREE.BoxGeometry(0.015, 0.015, 0.015);
+    // Material base
+    const baseMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
 
     for(let i=0; i<pos.count; i++) {
-        const dot = new THREE.Mesh(geo, mat);
+        // IMPORTANTE: mat.clone() para que cada punto tenga su propio material
+        const dot = new THREE.Mesh(geo, baseMat.clone());
+        
         const v = new THREE.Vector3().fromBufferAttribute(pos, i);
         dot.position.copy(v);
         dot.userData = { isVertex: true, index: i, parentMesh: mesh };
@@ -413,7 +412,12 @@ function createVertexHelpers(mesh) {
 
 function clearVertexHelpers(mesh) {
     for(let i = mesh.children.length - 1; i >= 0; i--) {
-        if(mesh.children[i].userData.isVertex) mesh.remove(mesh.children[i]);
+        if(mesh.children[i].userData.isVertex) {
+            const child = mesh.children[i];
+            child.geometry.dispose();
+            child.material.dispose(); // Limpiar memoria
+            mesh.remove(child);
+        }
     }
 }
 
