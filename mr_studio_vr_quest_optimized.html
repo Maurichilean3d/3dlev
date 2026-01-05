@@ -1,0 +1,1038 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>MR Studio Diamond - 3D Modeling VR Edition for Meta Quest</title>
+
+  <style>
+    :root {
+      --main-color: #ffaa00;
+      --bg-glass: rgba(20, 20, 25, 0.95);
+      --border-glass: rgba(255, 170, 0, 0.3);
+      --text-glow: 0 0 8px rgba(255, 170, 0, 0.4);
+      --select-color: #ff6600;
+      --vertex-color: #00ff00;
+      --edge-color: #ffff00;
+      --face-color: #0088ff;
+    }
+
+    * { box-sizing: border-box; user-select: none; font-family: 'Segoe UI', system-ui, sans-serif; }
+    body { margin: 0; overflow: hidden; background: #1a1a2e; color: #eee; }
+
+    #c { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; z-index: 0; }
+
+    .ui-panel {
+      position: fixed; left: 20px; top: 20px; width: 420px; max-height: 95vh;
+      background: var(--bg-glass);
+      backdrop-filter: blur(30px) saturate(150%);
+      border: 1px solid var(--border-glass);
+      border-radius: 24px;
+      padding: 20px; overflow-y: auto; z-index: 100;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+      scrollbar-width: thin; scrollbar-color: var(--main-color) transparent;
+    }
+
+    h2 {
+      margin: 0 0 18px 0; font-size: 15px; color: var(--main-color); font-weight: 900;
+      text-transform: uppercase; letter-spacing: 2px;
+      border-bottom: 2px solid var(--border-glass); padding-bottom: 12px;
+      text-shadow: var(--text-glow);
+    }
+
+    .sec-head {
+      font-size: 11px; font-weight: 900; color: #aaa; margin: 18px 0 8px 0;
+      text-transform: uppercase; letter-spacing: 1.5px;
+    }
+
+    .primitive-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin: 12px 0;
+    }
+
+    .primitive-btn {
+      padding: 16px;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid var(--border-glass);
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: center;
+      font-size: 20px;
+    }
+    .primitive-btn:hover { 
+      background: rgba(255,170,0,0.2); 
+      border-color: var(--main-color);
+      transform: scale(1.05);
+    }
+    .primitive-btn .label {
+      display: block;
+      font-size: 9px;
+      margin-top: 4px;
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+
+    button {
+      padding: 10px 16px; border-radius: 10px; border: none;
+      font-weight: 900; cursor: pointer;
+      color: #000; background: var(--main-color);
+      transition: 0.25s; font-size: 11px;
+      text-transform: uppercase; box-shadow: var(--text-glow);
+      width: 100%; margin: 5px 0;
+    }
+    button:active { transform: scale(0.97); }
+    button.secondary { 
+      background: rgba(255,255,255,0.1); 
+      color: #fff; 
+      border: 1px solid var(--border-glass); 
+      box-shadow: none; 
+    }
+
+    #vrBtn {
+      position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+      padding: 20px 60px; background: var(--main-color); color: #000;
+      border-radius: 50px; font-weight: 1000; z-index: 1000;
+      box-shadow: 0 0 30px rgba(255, 170, 0, 0.7); border: 3px solid #fff;
+      font-size: 16px; letter-spacing: 2px; cursor: pointer;
+      display: block;
+    }
+
+    .info-panel {
+      background: rgba(0,0,0,0.4);
+      border: 1px solid var(--border-glass);
+      border-radius: 12px;
+      padding: 12px;
+      margin: 12px 0;
+      font-size: 11px;
+      line-height: 1.6;
+    }
+
+    .shortcuts {
+      font-family: 'Fira Code', monospace;
+      font-size: 10px;
+      color: var(--main-color);
+    }
+  </style>
+</head>
+<body>
+
+  <canvas id="c"></canvas>
+
+  <div class="ui-panel" id="ui">
+    <h2>🥽 3D MODELING VR STUDIO</h2>
+
+    <div class="sec-head">🎨 PRIMITIVAS 3D</div>
+    <div class="primitive-grid">
+      <div class="primitive-btn" onclick="addPrimitive('cube')">
+        <div>⬛</div>
+        <span class="label">CUBO</span>
+      </div>
+      <div class="primitive-btn" onclick="addPrimitive('sphere')">
+        <div>⚫</div>
+        <span class="label">ESFERA</span>
+      </div>
+      <div class="primitive-btn" onclick="addPrimitive('cylinder')">
+        <div>⬤</div>
+        <span class="label">CILINDRO</span>
+      </div>
+      <div class="primitive-btn" onclick="addPrimitive('cone')">
+        <div>🔺</div>
+        <span class="label">CONO</span>
+      </div>
+      <div class="primitive-btn" onclick="addPrimitive('torus')">
+        <div>🍩</div>
+        <span class="label">TORUS</span>
+      </div>
+      <div class="primitive-btn" onclick="addPrimitive('plane')">
+        <div>▭</div>
+        <span class="label">PLANO</span>
+      </div>
+    </div>
+
+    <div class="info-panel">
+      <div class="sec-head" style="margin-top:0;">🎮 CONTROLES META QUEST</div>
+      <div class="shortcuts">
+        <strong>🎯 GRIP IZQUIERDO</strong> - Agarrar/Mover objeto<br>
+        <strong>🎯 GRIP DERECHO</strong> - Agarrar/Mover objeto<br>
+        <strong>📏 AMBOS GRIPS</strong> - Escalar con dos manos<br>
+        <strong>🔄 GRIP + ROTAR MANO</strong> - Rotar objeto<br>
+        <strong>🔘 TRIGGER</strong> - Seleccionar elemento (vértice/arista/cara)<br>
+        <strong>🅰️ BOTÓN A</strong> - Cambiar modo (Object/Vertex/Edge/Face)<br>
+        <strong>🅱️ BOTÓN B</strong> - Cambiar herramienta<br>
+        <strong>❌ BOTÓN X</strong> - Extruir selección<br>
+        <strong>🆈 BOTÓN Y</strong> - Eliminar selección<br>
+        <strong>👍 JOYSTICK IZQ</strong> - Teletransporte<br>
+        <strong>👍 JOYSTICK DER</strong> - Rotar vista<br>
+      </div>
+    </div>
+
+    <div class="sec-head">ℹ️ ESTADO</div>
+    <div class="info-panel" style="font-family: 'Fira Code', monospace;">
+      <div>Modo: <span id="stat-mode" style="color: var(--main-color);">OBJECT</span></div>
+      <div>Selección: <span id="stat-selection" style="color: var(--main-color);">0</span></div>
+      <div>Objetos: <span id="stat-objects" style="color: var(--main-color);">0</span></div>
+      <div>Vértices: <span id="stat-verts" style="color: var(--main-color);">0</span></div>
+      <div>Caras: <span id="stat-faces" style="color: var(--main-color);">0</span></div>
+    </div>
+  </div>
+
+  <button id="vrBtn" onclick="activateVR()">🥽 ENTRAR A VR</button>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+    import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
+
+    // ==============================================
+    // VARIABLES GLOBALES
+    // ==============================================
+    let scene, camera, renderer, canvas;
+    let orbit;
+
+    // XR
+    let xrSession = null;
+    let xrRefSpace = null;
+    let controller1, controller2;
+    let controllerGrip1, controllerGrip2;
+    let hand1, hand2;
+    let raycaster1, raycaster2;
+
+    // Objetos 3D
+    let objects = [];
+    let activeObject = null;
+
+    // Sistema de edición
+    let editMode = 'object'; // 'object', 'vertex', 'edge', 'face'
+    let selectedElements = new Set();
+    let vertexHelpers = [];
+    let edgeHelpers = [];
+    let faceHelpers = [];
+
+    // Control de agarre
+    let gripPressed = { left: false, right: false };
+    let grippedObject = { left: null, right: null };
+    let initialGripDistance = 0;
+    let initialScale = 1;
+    let initialGripData = { left: null, right: null };
+
+    // Flags
+    let selectPressed = { left: false, right: false };
+    let currentTool = 'move'; // 'move', 'extrude', 'inset', 'delete'
+
+    // Raycasters
+    let tempMatrix = new THREE.Matrix4();
+    let raycaster = new THREE.Raycaster();
+
+    // Geometría editable
+    let editableGeometry = null;
+
+    // Controlador visual
+    let controllerModels = [];
+
+    // ==============================================
+    // INICIALIZACIÓN
+    // ==============================================
+    function init() {
+      // Escena
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x1a1a2e);
+      scene.fog = new THREE.Fog(0x1a1a2e, 10, 50);
+
+      // Cámara
+      camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+      camera.position.set(0, 1.6, 3);
+
+      // Renderer
+      canvas = document.getElementById('c');
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.xr.enabled = true;
+
+      // Luces
+      const ambLight = new THREE.AmbientLight(0xffffff, 0.6);
+      scene.add(ambLight);
+
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      dirLight.position.set(5, 10, 5);
+      dirLight.castShadow = true;
+      dirLight.shadow.mapSize.width = 2048;
+      dirLight.shadow.mapSize.height = 2048;
+      dirLight.shadow.camera.far = 50;
+      scene.add(dirLight);
+
+      // Grid y suelo
+      const gridHelper = new THREE.GridHelper(20, 20, 0x444444, 0x222222);
+      scene.add(gridHelper);
+
+      const floorGeo = new THREE.PlaneGeometry(20, 20);
+      const floorMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+      const floor = new THREE.Mesh(floorGeo, floorMat);
+      floor.rotation.x = -Math.PI / 2;
+      floor.receiveShadow = true;
+      scene.add(floor);
+
+      // Axes helper
+      const axesHelper = new THREE.AxesHelper(2);
+      axesHelper.position.y = 0.01;
+      scene.add(axesHelper);
+
+      // Controles de órbita (para modo desktop)
+      orbit = new OrbitControls(camera, canvas);
+      orbit.target.set(0, 1, 0);
+      orbit.enableDamping = true;
+      orbit.dampingFactor = 0.05;
+      orbit.update();
+
+      // Configurar XR controllers
+      setupXRControllers();
+
+      // Event listeners
+      window.addEventListener('resize', onResize);
+
+      // Verificar soporte XR
+      checkXRSupport();
+
+      // Iniciar animación
+      renderer.setAnimationLoop(animate);
+
+      console.log('✅ Sistema VR inicializado');
+    }
+
+    // ==============================================
+    // CONFIGURACIÓN XR
+    // ==============================================
+    function setupXRControllers() {
+      const controllerModelFactory = new XRControllerModelFactory();
+      const handModelFactory = new XRHandModelFactory();
+
+      // Controlador 1 (izquierdo)
+      controller1 = renderer.xr.getController(0);
+      controller1.addEventListener('selectstart', () => onSelectStart(0));
+      controller1.addEventListener('selectend', () => onSelectEnd(0));
+      controller1.addEventListener('squeezestart', () => onSqueezeStart(0));
+      controller1.addEventListener('squeezeend', () => onSqueezeEnd(0));
+      scene.add(controller1);
+
+      controllerGrip1 = renderer.xr.getControllerGrip(0);
+      controllerGrip1.add(controllerModelFactory.createControllerModel(controllerGrip1));
+      scene.add(controllerGrip1);
+
+      hand1 = renderer.xr.getHand(0);
+      hand1.add(handModelFactory.createHandModel(hand1, 'mesh'));
+      scene.add(hand1);
+
+      // Ray visual para controlador 1
+      const geometry1 = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, -1)
+      ]);
+      const material1 = new THREE.LineBasicMaterial({ color: 0x00ffff, linewidth: 2 });
+      const line1 = new THREE.Line(geometry1, material1);
+      line1.scale.z = 5;
+      controller1.add(line1);
+
+      // Controlador 2 (derecho)
+      controller2 = renderer.xr.getController(1);
+      controller2.addEventListener('selectstart', () => onSelectStart(1));
+      controller2.addEventListener('selectend', () => onSelectEnd(1));
+      controller2.addEventListener('squeezestart', () => onSqueezeStart(1));
+      controller2.addEventListener('squeezeend', () => onSqueezeEnd(1));
+      scene.add(controller2);
+
+      controllerGrip2 = renderer.xr.getControllerGrip(1);
+      controllerGrip2.add(controllerModelFactory.createControllerModel(controllerGrip2));
+      scene.add(controllerGrip2);
+
+      hand2 = renderer.xr.getHand(1);
+      hand2.add(handModelFactory.createHandModel(hand2, 'mesh'));
+      scene.add(hand2);
+
+      // Ray visual para controlador 2
+      const geometry2 = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, -1)
+      ]);
+      const material2 = new THREE.LineBasicMaterial({ color: 0xff00ff, linewidth: 2 });
+      const line2 = new THREE.Line(geometry2, material2);
+      line2.scale.z = 5;
+      controller2.add(line2);
+
+      console.log('✅ Controladores XR configurados');
+    }
+
+    async function checkXRSupport() {
+      if ('xr' in navigator) {
+        const supported = await navigator.xr.isSessionSupported('immersive-vr');
+        if (supported) {
+          document.getElementById('vrBtn').style.display = 'block';
+          console.log('✅ WebXR VR soportado');
+        } else {
+          console.warn('⚠️ WebXR VR no soportado');
+          document.getElementById('vrBtn').textContent = '❌ VR NO DISPONIBLE';
+        }
+      } else {
+        console.warn('⚠️ WebXR no disponible');
+        document.getElementById('vrBtn').textContent = '❌ WebXR NO SOPORTADO';
+      }
+    }
+
+    // ==============================================
+    // ACTIVAR VR
+    // ==============================================
+    async function activateVR() {
+      if (!navigator.xr) {
+        alert('WebXR no está disponible en este navegador');
+        return;
+      }
+
+      try {
+        xrSession = await navigator.xr.requestSession('immersive-vr', {
+          requiredFeatures: ['local-floor', 'hand-tracking'],
+          optionalFeatures: ['bounded-floor']
+        });
+
+        await renderer.xr.setSession(xrSession);
+        xrRefSpace = await xrSession.requestReferenceSpace('local-floor');
+
+        // Ocultar UI 2D
+        document.getElementById('ui').style.display = 'none';
+        document.getElementById('vrBtn').style.display = 'none';
+
+        // Configurar gamepad inputs
+        xrSession.addEventListener('inputsourceschange', onInputSourcesChange);
+
+        console.log('✅ Sesión VR iniciada');
+      } catch (err) {
+        console.error('❌ Error al iniciar VR:', err);
+        alert('Error al iniciar VR: ' + err.message);
+      }
+    }
+
+    function onInputSourcesChange(event) {
+      // Detectar nuevos controles
+      console.log('🎮 Controles detectados:', event);
+    }
+
+    // ==============================================
+    // EVENTOS DE CONTROLADORES
+    // ==============================================
+    function onSelectStart(controllerIndex) {
+      const side = controllerIndex === 0 ? 'left' : 'right';
+      selectPressed[side] = true;
+
+      const controller = controllerIndex === 0 ? controller1 : controller2;
+
+      // Raycast para selección
+      tempMatrix.identity().extractRotation(controller.matrixWorld);
+      raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+      if (editMode === 'object') {
+        selectObjectWithRay();
+      } else {
+        selectElementWithRay();
+      }
+    }
+
+    function onSelectEnd(controllerIndex) {
+      const side = controllerIndex === 0 ? 'left' : 'right';
+      selectPressed[side] = false;
+    }
+
+    function onSqueezeStart(controllerIndex) {
+      const side = controllerIndex === 0 ? 'left' : 'right';
+      gripPressed[side] = true;
+
+      const controller = controllerIndex === 0 ? controller1 : controller2;
+      const grip = controllerIndex === 0 ? controllerGrip1 : controllerGrip2;
+
+      // Intentar agarrar objeto
+      tempMatrix.identity().extractRotation(controller.matrixWorld);
+      raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+      const meshes = objects.map(o => o.mesh);
+      const intersects = raycaster.intersectObjects(meshes);
+
+      if (intersects.length > 0) {
+        const obj = objects.find(o => o.mesh === intersects[0].object);
+        if (obj) {
+          grippedObject[side] = obj;
+          
+          // Guardar información inicial del agarre
+          initialGripData[side] = {
+            objectPosition: obj.mesh.position.clone(),
+            objectRotation: obj.mesh.rotation.clone(),
+            objectScale: obj.mesh.scale.clone(),
+            gripPosition: grip.position.clone(),
+            gripRotation: grip.quaternion.clone()
+          };
+
+          // Cambiar color para indicar selección
+          obj.mesh.material.emissive.setHex(0xff6600);
+
+          console.log(`✅ Objeto agarrado con mano ${side}`);
+        }
+      }
+
+      // Si ambas manos agarran, preparar para escalar
+      if (gripPressed.left && gripPressed.right && 
+          grippedObject.left && grippedObject.right &&
+          grippedObject.left === grippedObject.right) {
+        
+        const pos1 = controllerGrip1.position;
+        const pos2 = controllerGrip2.position;
+        initialGripDistance = pos1.distanceTo(pos2);
+        initialScale = grippedObject.left.mesh.scale.x;
+
+        console.log('✅ Modo escalar con dos manos activado');
+      }
+    }
+
+    function onSqueezeEnd(controllerIndex) {
+      const side = controllerIndex === 0 ? 'left' : 'right';
+      
+      if (grippedObject[side]) {
+        // Restaurar color
+        grippedObject[side].mesh.material.emissive.setHex(0x000000);
+        grippedObject[side] = null;
+        initialGripData[side] = null;
+      }
+
+      gripPressed[side] = false;
+      initialGripDistance = 0;
+    }
+
+    // ==============================================
+    // SELECCIÓN CON RAYCAST
+    // ==============================================
+    function selectObjectWithRay() {
+      const meshes = objects.map(o => o.mesh);
+      const intersects = raycaster.intersectObjects(meshes);
+
+      if (intersects.length > 0) {
+        const obj = objects.find(o => o.mesh === intersects[0].object);
+        if (obj) {
+          selectObject(obj);
+        }
+      }
+    }
+
+    function selectElementWithRay() {
+      if (!activeObject) return;
+
+      let targets = [];
+      if (editMode === 'vertex') targets = vertexHelpers;
+      else if (editMode === 'edge') targets = edgeHelpers;
+      else if (editMode === 'face') targets = faceHelpers;
+
+      const intersects = raycaster.intersectObjects(targets);
+
+      if (intersects.length > 0) {
+        const element = intersects[0].object;
+        const id = element.uuid;
+
+        if (selectedElements.has(id)) {
+          selectedElements.delete(id);
+          element.material.color.setHex(getDefaultColor());
+        } else {
+          selectedElements.add(id);
+          element.material.color.setHex(0xff6600);
+        }
+
+        updateStats();
+        console.log(`✅ Elemento ${editMode} seleccionado`);
+      }
+    }
+
+    // ==============================================
+    // ACTUALIZACIÓN DE AGARRE
+    // ==============================================
+    function updateGrippedObjects() {
+      // Mano izquierda
+      if (gripPressed.left && grippedObject.left && initialGripData.left) {
+        const obj = grippedObject.left;
+        const data = initialGripData.left;
+
+        // Solo mover si no está escalando con dos manos
+        if (!(gripPressed.right && grippedObject.right === obj)) {
+          // Calcular desplazamiento
+          const gripDelta = new THREE.Vector3().subVectors(
+            controllerGrip1.position,
+            data.gripPosition
+          );
+
+          obj.mesh.position.copy(data.objectPosition).add(gripDelta);
+
+          // Rotar según la mano
+          const gripRotation = new THREE.Quaternion().copy(controllerGrip1.quaternion);
+          const rotDelta = gripRotation.clone().multiply(data.gripRotation.clone().invert());
+          
+          obj.mesh.quaternion.copy(data.objectRotation).premultiply(rotDelta);
+        }
+      }
+
+      // Mano derecha
+      if (gripPressed.right && grippedObject.right && initialGripData.right) {
+        const obj = grippedObject.right;
+        const data = initialGripData.right;
+
+        // Solo mover si no está escalando con dos manos
+        if (!(gripPressed.left && grippedObject.left === obj)) {
+          const gripDelta = new THREE.Vector3().subVectors(
+            controllerGrip2.position,
+            data.gripPosition
+          );
+
+          obj.mesh.position.copy(data.objectPosition).add(gripDelta);
+
+          // Rotar según la mano
+          const gripRotation = new THREE.Quaternion().copy(controllerGrip2.quaternion);
+          const rotDelta = gripRotation.clone().multiply(data.gripRotation.clone().invert());
+          
+          obj.mesh.quaternion.copy(data.objectRotation).premultiply(rotDelta);
+        }
+      }
+
+      // Escalar con dos manos
+      if (gripPressed.left && gripPressed.right && 
+          grippedObject.left && grippedObject.right &&
+          grippedObject.left === grippedObject.right &&
+          initialGripDistance > 0) {
+        
+        const obj = grippedObject.left;
+        const pos1 = controllerGrip1.position;
+        const pos2 = controllerGrip2.position;
+        const currentDistance = pos1.distanceTo(pos2);
+        
+        const scaleFactor = currentDistance / initialGripDistance;
+        const newScale = initialScale * scaleFactor;
+        
+        obj.mesh.scale.setScalar(Math.max(0.1, Math.min(5, newScale)));
+
+        // Posición en el centro de ambas manos
+        const centerPos = new THREE.Vector3().addVectors(pos1, pos2).multiplyScalar(0.5);
+        obj.mesh.position.copy(centerPos);
+      }
+    }
+
+    // ==============================================
+    // GAMEPAD INPUTS
+    // ==============================================
+    function handleGamepadInputs() {
+      if (!xrSession) return;
+
+      const sources = xrSession.inputSources;
+      
+      for (const source of sources) {
+        if (!source.gamepad) continue;
+
+        const handedness = source.handedness; // 'left' or 'right'
+        const gamepad = source.gamepad;
+
+        // Botones Quest 2/3:
+        // 0: Trigger
+        // 1: Grip
+        // 4: A/X
+        // 5: B/Y
+        // 6: Thumbstick press
+
+        // Botón A (derecha) o X (izquierda) - Cambiar modo
+        if (gamepad.buttons[4] && gamepad.buttons[4].pressed && !gamepad.buttons[4].wasPressed) {
+          cyclEditMode();
+          gamepad.buttons[4].wasPressed = true;
+        }
+        if (gamepad.buttons[4] && !gamepad.buttons[4].pressed) {
+          gamepad.buttons[4].wasPressed = false;
+        }
+
+        // Botón B (derecha) o Y (izquierda) - Cambiar herramienta
+        if (gamepad.buttons[5] && gamepad.buttons[5].pressed && !gamepad.buttons[5].wasPressed) {
+          cycleTool();
+          gamepad.buttons[5].wasPressed = true;
+        }
+        if (gamepad.buttons[5] && !gamepad.buttons[5].pressed) {
+          gamepad.buttons[5].wasPressed = false;
+        }
+
+        // Joystick para teletransporte (mano izquierda)
+        if (handedness === 'left' && gamepad.axes && gamepad.axes.length >= 4) {
+          const x = gamepad.axes[2];
+          const y = gamepad.axes[3];
+
+          if (Math.abs(y) > 0.5) {
+            // Mover cámara adelante/atrás
+            const forward = new THREE.Vector3(0, 0, -1);
+            forward.applyQuaternion(camera.quaternion);
+            forward.y = 0;
+            forward.normalize();
+            camera.position.addScaledVector(forward, y * 0.05);
+          }
+        }
+
+        // Joystick para rotar vista (mano derecha)
+        if (handedness === 'right' && gamepad.axes && gamepad.axes.length >= 4) {
+          const x = gamepad.axes[2];
+
+          if (Math.abs(x) > 0.5) {
+            camera.rotation.y -= x * 0.02;
+          }
+        }
+      }
+    }
+
+    function cyclEditMode() {
+      const modes = ['object', 'vertex', 'edge', 'face'];
+      const currentIndex = modes.indexOf(editMode);
+      const nextIndex = (currentIndex + 1) % modes.length;
+      setEditMode(modes[nextIndex]);
+      
+      console.log(`🔄 Modo cambiado a: ${editMode.toUpperCase()}`);
+    }
+
+    function cycleTool() {
+      const tools = ['move', 'extrude', 'inset', 'delete'];
+      const currentIndex = tools.indexOf(currentTool);
+      const nextIndex = (currentIndex + 1) % tools.length;
+      currentTool = tools[nextIndex];
+      
+      console.log(`🔧 Herramienta: ${currentTool.toUpperCase()}`);
+    }
+
+    // ==============================================
+    // PRIMITIVAS 3D
+    // ==============================================
+    function addPrimitive(type) {
+      let geometry;
+      
+      switch(type) {
+        case 'cube':
+          geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5, 4, 4, 4);
+          break;
+        case 'sphere':
+          geometry = new THREE.SphereGeometry(0.3, 32, 16);
+          break;
+        case 'cylinder':
+          geometry = new THREE.CylinderGeometry(0.25, 0.25, 0.5, 32);
+          break;
+        case 'cone':
+          geometry = new THREE.ConeGeometry(0.25, 0.5, 32);
+          break;
+        case 'torus':
+          geometry = new THREE.TorusGeometry(0.3, 0.12, 16, 32);
+          break;
+        case 'plane':
+          geometry = new THREE.PlaneGeometry(0.5, 0.5, 10, 10);
+          geometry.rotateX(-Math.PI / 2);
+          break;
+        default:
+          geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+      }
+
+      const material = new THREE.MeshStandardMaterial({
+        color: 0xffaa00,
+        roughness: 0.5,
+        metalness: 0.2,
+        side: THREE.DoubleSide
+      });
+
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      
+      // Posicionar delante del usuario
+      mesh.position.set(0, 1.2, -1);
+
+      const obj = {
+        id: Date.now(),
+        mesh: mesh,
+        type: type,
+        originalGeometry: geometry.clone()
+      };
+
+      objects.push(obj);
+      scene.add(mesh);
+
+      updateStats();
+
+      console.log(`✅ Primitiva ${type} añadida en VR`);
+    }
+
+    // ==============================================
+    // SISTEMA DE SELECCIÓN Y EDICIÓN
+    // ==============================================
+    function selectObject(obj) {
+      if (activeObject) {
+        activeObject.mesh.material.emissive.setHex(0x000000);
+      }
+
+      activeObject = obj;
+      obj.mesh.material.emissive.setHex(0x004400);
+      
+      if (editMode !== 'object') {
+        enterEditMode();
+      }
+
+      updateStats();
+    }
+
+    function setEditMode(mode) {
+      if (editMode === mode) return;
+
+      exitEditMode();
+      editMode = mode;
+
+      if (mode !== 'object' && activeObject) {
+        enterEditMode();
+      }
+
+      updateStats();
+      document.getElementById('stat-mode').textContent = mode.toUpperCase();
+    }
+
+    function enterEditMode() {
+      if (!activeObject) return;
+
+      clearHelpers();
+
+      const geo = activeObject.mesh.geometry;
+      editableGeometry = geo;
+
+      if (editMode === 'vertex') {
+        createVertexHelpers();
+      } else if (editMode === 'edge') {
+        createEdgeHelpers();
+      } else if (editMode === 'face') {
+        createFaceHelpers();
+      }
+    }
+
+    function exitEditMode() {
+      clearHelpers();
+      selectedElements.clear();
+      editableGeometry = null;
+    }
+
+    // ==============================================
+    // HELPERS VISUALES
+    // ==============================================
+    function createVertexHelpers() {
+      if (!activeObject || !editableGeometry) return;
+
+      const positions = editableGeometry.attributes.position.array;
+      const vertexCount = positions.length / 3;
+
+      for (let i = 0; i < vertexCount; i++) {
+        const x = positions[i * 3];
+        const y = positions[i * 3 + 1];
+        const z = positions[i * 3 + 2];
+
+        const geometry = new THREE.SphereGeometry(0.02, 8, 8);
+        const material = new THREE.MeshBasicMaterial({
+          color: 0x00ff00,
+          depthTest: true
+        });
+        const sphere = new THREE.Mesh(geometry, material);
+
+        const localPos = new THREE.Vector3(x, y, z);
+        const worldPos = localPos.applyMatrix4(activeObject.mesh.matrixWorld);
+        sphere.position.copy(worldPos);
+
+        sphere.userData = { type: 'vertex', index: i, localPos: new THREE.Vector3(x, y, z) };
+
+        vertexHelpers.push(sphere);
+        scene.add(sphere);
+      }
+
+      console.log(`✅ ${vertexCount} vértices en VR`);
+    }
+
+    function createEdgeHelpers() {
+      if (!activeObject || !editableGeometry) return;
+
+      const positions = editableGeometry.attributes.position.array;
+      const index = editableGeometry.index;
+
+      if (!index) return;
+
+      const edges = new Set();
+      const indices = index.array;
+
+      for (let i = 0; i < indices.length; i += 3) {
+        const a = indices[i];
+        const b = indices[i + 1];
+        const c = indices[i + 2];
+
+        edges.add([Math.min(a, b), Math.max(a, b)].join('-'));
+        edges.add([Math.min(b, c), Math.max(b, c)].join('-'));
+        edges.add([Math.min(c, a), Math.max(c, a)].join('-'));
+      }
+
+      edges.forEach(edgeKey => {
+        const [a, b] = edgeKey.split('-').map(Number);
+
+        const v1 = new THREE.Vector3(
+          positions[a * 3],
+          positions[a * 3 + 1],
+          positions[a * 3 + 2]
+        );
+        const v2 = new THREE.Vector3(
+          positions[b * 3],
+          positions[b * 3 + 1],
+          positions[b * 3 + 2]
+        );
+
+        v1.applyMatrix4(activeObject.mesh.matrixWorld);
+        v2.applyMatrix4(activeObject.mesh.matrixWorld);
+
+        const geometry = new THREE.BufferGeometry().setFromPoints([v1, v2]);
+        const material = new THREE.LineBasicMaterial({
+          color: 0xffff00,
+          linewidth: 3
+        });
+        const line = new THREE.Line(geometry, material);
+
+        line.userData = { type: 'edge', indices: [a, b] };
+
+        edgeHelpers.push(line);
+        scene.add(line);
+      });
+
+      console.log(`✅ ${edges.size} aristas en VR`);
+    }
+
+    function createFaceHelpers() {
+      if (!activeObject || !editableGeometry) return;
+
+      const positions = editableGeometry.attributes.position.array;
+      const index = editableGeometry.index;
+
+      if (!index) return;
+
+      const indices = index.array;
+
+      for (let i = 0; i < indices.length; i += 3) {
+        const a = indices[i];
+        const b = indices[i + 1];
+        const c = indices[i + 2];
+
+        const v1 = new THREE.Vector3(positions[a * 3], positions[a * 3 + 1], positions[a * 3 + 2]);
+        const v2 = new THREE.Vector3(positions[b * 3], positions[b * 3 + 1], positions[b * 3 + 2]);
+        const v3 = new THREE.Vector3(positions[c * 3], positions[c * 3 + 1], positions[c * 3 + 2]);
+
+        const center = new THREE.Vector3()
+          .add(v1).add(v2).add(v3)
+          .divideScalar(3);
+
+        center.applyMatrix4(activeObject.mesh.matrixWorld);
+
+        const geometry = new THREE.SphereGeometry(0.03, 8, 8);
+        const material = new THREE.MeshBasicMaterial({
+          color: 0x0088ff,
+          transparent: true,
+          opacity: 0.6
+        });
+        const sphere = new THREE.Mesh(geometry, material);
+        sphere.position.copy(center);
+
+        sphere.userData = { type: 'face', indices: [a, b, c] };
+
+        faceHelpers.push(sphere);
+        scene.add(sphere);
+      }
+
+      console.log(`✅ ${indices.length / 3} caras en VR`);
+    }
+
+    function clearHelpers() {
+      [...vertexHelpers, ...edgeHelpers, ...faceHelpers].forEach(h => {
+        scene.remove(h);
+        if (h.geometry) h.geometry.dispose();
+        if (h.material) h.material.dispose();
+      });
+
+      vertexHelpers = [];
+      edgeHelpers = [];
+      faceHelpers = [];
+    }
+
+    function getDefaultColor() {
+      if (editMode === 'vertex') return 0x00ff00;
+      if (editMode === 'edge') return 0xffff00;
+      if (editMode === 'face') return 0x0088ff;
+      return 0xffffff;
+    }
+
+    // ==============================================
+    // UI Y STATS
+    // ==============================================
+    function updateStats() {
+      document.getElementById('stat-mode').textContent = editMode.toUpperCase();
+      document.getElementById('stat-selection').textContent = selectedElements.size;
+      document.getElementById('stat-objects').textContent = objects.length;
+
+      if (activeObject && editableGeometry) {
+        const vertCount = editableGeometry.attributes.position.count;
+        const faceCount = editableGeometry.index ? editableGeometry.index.count / 3 : vertCount / 3;
+
+        document.getElementById('stat-verts').textContent = vertCount;
+        document.getElementById('stat-faces').textContent = Math.floor(faceCount);
+      } else {
+        document.getElementById('stat-verts').textContent = '0';
+        document.getElementById('stat-faces').textContent = '0';
+      }
+    }
+
+    // ==============================================
+    // RESIZE
+    // ==============================================
+    function onResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // ==============================================
+    // LOOP DE ANIMACIÓN
+    // ==============================================
+    function animate(time, frame) {
+      if (!xrSession) {
+        orbit.update();
+      }
+
+      // Actualizar objetos agarrados
+      updateGrippedObjects();
+
+      // Procesar inputs de gamepad
+      handleGamepadInputs();
+
+      renderer.render(scene, camera);
+    }
+
+    // ==============================================
+    // EXPONER FUNCIONES GLOBALES
+    // ==============================================
+    window.addPrimitive = addPrimitive;
+    window.activateVR = activateVR;
+
+    // Iniciar aplicación
+    init();
+  </script>
+</body>
+</html>
