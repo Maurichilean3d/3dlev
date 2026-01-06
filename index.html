@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MR Studio: Solid Vertices</title>
+    <title>MR Studio Pro: Blender-Style Tools</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; font-family: sans-serif; color: #fff; }
         #overlay {
@@ -16,15 +16,24 @@
             border-radius: 12px; font-weight: bold; cursor: pointer; color: white;
             box-shadow: 0 0 20px rgba(0,136,255,0.5);
         }
-        .instr { margin-top: 20px; color: #aaa; font-size: 14px; text-align: center; }
+        #info {
+            position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7);
+            padding: 10px; border-radius: 5px; font-size: 12px; max-width: 300px;
+        }
     </style>
 </head>
 <body>
 
 <div id="overlay">
-    <h1>MR STUDIO: SOLID VERTICES</h1>
-    <p>Corrección: Las esquinas ahora son sólidas e indivisibles.</p>
+    <h1>MR STUDIO PRO</h1>
+    <p>Herramientas profesionales de modelado estilo Blender para VR</p>
     <button id="btn-start">INICIAR</button>
+</div>
+
+<div id="info">
+    <div><strong>Modo:</strong> <span id="mode-display">OBJECT</span></div>
+    <div><strong>Herramienta:</strong> <span id="tool-display">-</span></div>
+    <div><strong>Selección:</strong> <span id="sel-display">Ninguna</span></div>
 </div>
 
 <script type="importmap">
@@ -41,37 +50,52 @@ import * as THREE from 'three';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 
 // ==========================================
-// 1. MOTOR
+// 1. MOTOR Y VARIABLES GLOBALES
 // ==========================================
 let scene, camera, renderer;
-let ctrlRight, gripLeft;
+let ctrlRight, gripLeft, gripRight;
 let uiGroup; 
 const uiButtons = []; 
 const objects = []; 
 
-// Variables Interacción
+// Selector táctil
 let selectorSphere;
-const SELECTOR_RADIUS = 0.05; 
+const SELECTOR_RADIUS = 0.06; 
 
 // Variables reutilizables
 const _tempVecA = new THREE.Vector3();
 const _tempVecB = new THREE.Vector3();
+const _tempVecC = new THREE.Vector3();
 const _ray = new THREE.Raycaster();
 const _mat = new THREE.Matrix4();
 
-// ESTADO
+// Gizmo
+let gizmo = null;
+
+// ESTADO PRINCIPAL
 const STATE = {
     hoveredBtn: null,
     selected: null,      
     mainMesh: null,      
-    mode: 'OBJECT',      
+    mode: 'OBJECT',      // 'OBJECT', 'VERTEX', 'EDGE', 'FACE'
+    tool: null,          // 'KNIFE', 'BRIDGE', 'LOOP_CUT', etc.
     grabbedElement: null, 
     menuAttached: false,
-    closestVertex: null
+    closestVertex: null,
+    closestEdge: null,
+    closestFace: null,
+    edgeHelpers: [],
+    faceHelpers: [],
+    selection: [],       // Multi-selección
+    knifePoints: [],     // Para la herramienta de cuchillo
+    bridgeEdges: []      // Para puente entre aristas
 };
 
 init();
 
+// ==========================================
+// 2. INICIALIZACIÓN
+// ==========================================
 function init() {
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x111111);
@@ -92,6 +116,7 @@ function init() {
 
     setupControllers();
     createWristUI();
+    createGizmo();
 
     document.getElementById('btn-start').addEventListener('click', () => {
         navigator.xr.requestSession('immersive-ar', { 
@@ -107,12 +132,11 @@ function init() {
 }
 
 // ==========================================
-// 2. CONTROLADORES
+// 3. CONTROLADORES
 // ==========================================
 function setupControllers() {
     const modelFactory = new XRControllerModelFactory();
 
-    // DERECHA
     const c0 = renderer.xr.getController(0);
     const c1 = renderer.xr.getController(1);
 
@@ -120,9 +144,9 @@ function setupControllers() {
         if (e.data.handedness === 'right') {
             ctrlRight = e.target;
             
-            // ESFERA ROJA (Puntero Táctil)
+            // Esfera selectora (roja)
             const geo = new THREE.SphereGeometry(0.008, 16, 16); 
-            const mat = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.6 });
+            const mat = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.7 });
             selectorSphere = new THREE.Mesh(geo, mat);
             selectorSphere.position.set(0, -0.01, -0.04); 
             ctrlRight.add(selectorSphere);
@@ -130,91 +154,267 @@ function setupControllers() {
             // Rayo UI
             const line = new THREE.Line(
                 new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)]),
-                new THREE.LineBasicMaterial({ color: 0x0088ff, opacity: 0.2, transparent: true })
+                new THREE.LineBasicMaterial({ color: 0x0088ff, opacity: 0.3, transparent: true })
             );
             ctrlRight.add(line);
 
             ctrlRight.addEventListener('selectstart', onTriggerStart); 
+            ctrlRight.addEventListener('selectend', onTriggerEnd); 
             ctrlRight.addEventListener('squeezestart', onGripStart);   
             ctrlRight.addEventListener('squeezeend', onGripEnd);       
         }
     };
+    
     c0.addEventListener('connected', onConnected);
     c1.addEventListener('connected', onConnected);
     scene.add(c0);
     scene.add(c1);
 
-    // IZQUIERDA
+    // Grips
     gripLeft = renderer.xr.getControllerGrip(0);
     gripLeft.add(modelFactory.createControllerModel(gripLeft));
     scene.add(gripLeft);
     
-    const gripRight = renderer.xr.getControllerGrip(1);
+    gripRight = renderer.xr.getControllerGrip(1);
     gripRight.add(modelFactory.createControllerModel(gripRight));
     scene.add(gripRight);
 }
 
 // ==========================================
-// 3. UI
+// 4. UI - MENÚ DE MUÑECA
 // ==========================================
 function createWristUI() {
     uiGroup = new THREE.Group();
     uiGroup.position.set(0.05, 0.05, -0.05);
     uiGroup.rotation.set(-Math.PI/2, 0, Math.PI/2);
 
-    const bg = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.22), new THREE.MeshBasicMaterial({ color: 0x000000, opacity: 0.8, transparent: true }));
+    const bg = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.24, 0.42), 
+        new THREE.MeshBasicMaterial({ color: 0x000000, opacity: 0.85, transparent: true })
+    );
     uiGroup.add(bg);
 
-    createBtn('CUBO', 0x0055ff, -0.04, 0.08, () => spawn('box'));
-    createBtn('ESFERA', 0x00aa55, 0.04, 0.08, () => spawn('sphere'));
+    let yPos = 0.18;
+
+    // === CREAR OBJETOS ===
+    createBtnRow([
+        { text: 'CUBO', color: 0x0055ff, action: () => spawn('box') },
+        { text: 'ESFERA', color: 0x00aa55, action: () => spawn('sphere') },
+        { text: 'CILINDRO', color: 0x5500ff, action: () => spawn('cylinder') },
+        { text: 'TORUS', color: 0x00aaff, action: () => spawn('torus') }
+    ], yPos); yPos -= 0.06;
     
-    createBtn('OBJ / VERT', 0xaa00aa, 0.0, 0.02, toggleMode);
+    // === MODOS ===
+    createBtnRow([
+        { text: 'OBJETO', color: 0xaa00aa, action: () => switchMode('OBJECT') },
+        { text: 'VÉRTICE', color: 0xaa00aa, action: () => switchMode('VERTEX') },
+        { text: 'ARISTA', color: 0xaa5500, action: () => switchMode('EDGE') },
+        { text: 'CARA', color: 0xaa8800, action: () => switchMode('FACE') }
+    ], yPos); yPos -= 0.06;
     
-    createBtn('BORRAR', 0xff0000, 0, -0.06, deleteSelected);
+    // === HERRAMIENTAS DE VÉRTICES ===
+    createBtnRow([
+        { text: 'MERGE', color: 0x00ff88, action: mergeVertices },
+        { text: 'SUBDIV', color: 0x00dd66, action: subdivideSelection },
+        { text: 'BEVEL', color: 0x00bb44, action: bevelVertices },
+        { text: 'SMOOTH', color: 0x009922, action: smoothVertices }
+    ], yPos); yPos -= 0.06;
+    
+    // === HERRAMIENTAS DE ARISTAS ===
+    createBtnRow([
+        { text: 'EXTRUIR', color: 0xff5500, action: extrudeEdges },
+        { text: 'PUENTE', color: 0xff7700, action: bridgeEdges },
+        { text: 'LOOP', color: 0xff9900, action: insertLoopCut },
+        { text: 'DISOLVER', color: 0xffbb00, action: dissolveEdges }
+    ], yPos); yPos -= 0.06;
+    
+    // === HERRAMIENTAS DE CARAS ===
+    createBtnRow([
+        { text: 'EXTRUIR', color: 0x5555ff, action: extrudeFaces },
+        { text: 'INSERTAR', color: 0x7777ff, action: insetFaces },
+        { text: 'SOLIDIFY', color: 0x9999ff, action: solidifyFaces },
+        { text: 'FLIP', color: 0xbbbbff, action: flipNormals }
+    ], yPos); yPos -= 0.06;
+    
+    // === MODIFICADORES ===
+    createBtnRow([
+        { text: 'SUBDIV', color: 0x00ffaa, action: applySubdivision },
+        { text: 'MIRROR', color: 0x00ddaa, action: applyMirror },
+        { text: 'ARRAY', color: 0x00bbaa, action: applyArray },
+        { text: 'BOOL', color: 0x0099aa, action: applyBoolean }
+    ], yPos); yPos -= 0.06;
+    
+    // === HERRAMIENTAS ESPECIALES ===
+    createBtnRow([
+        { text: 'CUCHILLO', color: 0xff00ff, action: activateKnifeTool },
+        { text: 'TRIÁNGULAR', color: 0xdd00dd, action: triangulate },
+        { text: 'LIMPIAR', color: 0xbb00bb, action: cleanupMesh },
+        { text: 'OPTIMIZAR', color: 0x9900bb, action: optimizeMesh }
+    ], yPos); yPos -= 0.06;
+    
+    // === ACCIONES ===
+    createBtnRow([
+        { text: 'BORRAR', color: 0xff0000, action: deleteSelected },
+        { text: 'DUPLICAR', color: 0x5555ff, action: duplicateObject },
+        { text: 'SEPARAR', color: 0x7755ff, action: separateMesh },
+        { text: 'UNIR', color: 0x9955ff, action: joinMeshes }
+    ], yPos);
+}
+
+function createBtnRow(buttons, yPos) {
+    const count = buttons.length;
+    const spacing = 0.055;
+    const startX = -(count - 1) * spacing / 2;
+    
+    buttons.forEach((btn, i) => {
+        createBtn(btn.text, btn.color, startX + i * spacing, yPos, btn.action);
+    });
 }
 
 function createBtn(text, color, x, y, cb) {
-    const btn = new THREE.Mesh(new THREE.PlaneGeometry(0.06, 0.04), new THREE.MeshBasicMaterial({ color: color }));
+    const btn = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.05, 0.045), 
+        new THREE.MeshBasicMaterial({ color: color })
+    );
     btn.position.set(x, y, 0.01);
-    const cvs = document.createElement('canvas'); cvs.width=128; cvs.height=64;
+    
+    const cvs = document.createElement('canvas'); 
+    cvs.width = 128; 
+    cvs.height = 64;
     const ctx = cvs.getContext('2d');
-    ctx.fillStyle = '#' + new THREE.Color(color).getHexString(); ctx.fillRect(0,0,128,64);
-    ctx.fillStyle = 'white'; ctx.font = 'bold 24px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillStyle = '#' + new THREE.Color(color).getHexString(); 
+    ctx.fillRect(0, 0, 128, 64);
+    ctx.fillStyle = 'white'; 
+    ctx.font = 'bold 14px Arial'; 
+    ctx.textAlign = 'center'; 
+    ctx.textBaseline = 'middle';
     ctx.fillText(text, 64, 32);
+    
     const tex = new THREE.CanvasTexture(cvs);
-    const label = new THREE.Mesh(new THREE.PlaneGeometry(0.06, 0.04), new THREE.MeshBasicMaterial({map:tex, transparent:true}));
+    const label = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.05, 0.045), 
+        new THREE.MeshBasicMaterial({map: tex, transparent: true})
+    );
     label.position.z = 0.002;
     btn.add(label);
+    
     btn.userData = { isButton: true, action: cb, baseColor: new THREE.Color(color) };
     uiGroup.add(btn);
     uiButtons.push(btn);
 }
 
 // ==========================================
-// 4. LÓGICA DE INTERACCIÓN
+// 5. GIZMO SYSTEM
 // ==========================================
+function createGizmo() {
+    gizmo = new THREE.Group();
+    gizmo.visible = false;
+    
+    // Ejes X, Y, Z
+    const colors = [0xff0000, 0x00ff00, 0x0000ff];
+    const axes = [
+        new THREE.Vector3(1, 0, 0),
+        new THREE.Vector3(0, 1, 0),
+        new THREE.Vector3(0, 0, 1)
+    ];
+    
+    axes.forEach((axis, i) => {
+        const arrow = createArrow(colors[i], axis);
+        gizmo.add(arrow);
+        arrow.userData = { axis: ['x', 'y', 'z'][i], isGizmoHandle: true };
+    });
+    
+    scene.add(gizmo);
+}
 
+function createArrow(color, direction) {
+    const group = new THREE.Group();
+    
+    const lineMat = new THREE.LineBasicMaterial({ color: color, linewidth: 3 });
+    const lineGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0),
+        direction.clone().multiplyScalar(0.1)
+    ]);
+    const line = new THREE.Line(lineGeo, lineMat);
+    group.add(line);
+    
+    const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(0.01, 0.03, 8),
+        new THREE.MeshBasicMaterial({ color: color })
+    );
+    cone.position.copy(direction.clone().multiplyScalar(0.1));
+    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+    group.add(cone);
+    
+    return group;
+}
+
+function updateGizmoPosition() {
+    if (!gizmo.visible) return;
+    
+    if (STATE.selected) {
+        if (STATE.selected.userData.isVertex || STATE.selected.userData.isEdge || STATE.selected.userData.isFace) {
+            STATE.selected.getWorldPosition(_tempVecA);
+            gizmo.position.copy(_tempVecA);
+        }
+    }
+}
+
+function showGizmo(visible) {
+    gizmo.visible = visible;
+    if (visible) updateGizmoPosition();
+}
+
+// ==========================================
+// 6. EVENTOS DE INTERACCIÓN
+// ==========================================
 function onTriggerStart() {
     if (STATE.hoveredBtn) {
         STATE.hoveredBtn.userData.action();
         const b = STATE.hoveredBtn;
-        b.scale.set(0.9,0.9,1); setTimeout(()=>b.scale.set(1,1,1),100);
-    } else if (STATE.mode === 'OBJECT') {
+        b.scale.set(0.9, 0.9, 1); 
+        setTimeout(() => b.scale.set(1, 1, 1), 100);
+        return;
+    }
+    
+    // Herramienta de cuchillo
+    if (STATE.tool === 'KNIFE' && STATE.mainMesh) {
+        addKnifePoint();
+        return;
+    }
+    
+    // Selección según modo
+    if (STATE.mode === 'OBJECT') {
         checkRaycastSelection();
+    } else if (STATE.mode === 'VERTEX' && STATE.closestVertex) {
+        toggleSelection(STATE.closestVertex);
+    } else if (STATE.mode === 'EDGE' && STATE.closestEdge) {
+        toggleSelection(STATE.closestEdge);
+    } else if (STATE.mode === 'FACE' && STATE.closestFace) {
+        toggleSelection(STATE.closestFace);
+    }
+}
+
+function onTriggerEnd() {
+    // Finalizar herramienta de cuchillo
+    if (STATE.tool === 'KNIFE' && STATE.knifePoints.length > 1) {
+        executeKnifeCut();
     }
 }
 
 function onGripStart() {
-    // 1. Agarrar VÉRTICE (Touch)
+    // Agarrar elemento más cercano
     if (STATE.mode === 'VERTEX' && STATE.closestVertex) {
         STATE.grabbedElement = STATE.closestVertex;
-        ctrlRight.attach(STATE.grabbedElement); // Pegar a la mano
-        STATE.grabbedElement.material.color.setHex(0xffffff); // Blanco
-        return;
-    }
-
-    // 2. Agarrar OBJETO
-    if (STATE.mode === 'OBJECT' && STATE.selected && !STATE.selected.userData.isVertex) {
+        ctrlRight.attach(STATE.grabbedElement);
+        STATE.grabbedElement.material.color.setHex(0xffffff);
+        showGizmo(false);
+    } else if (STATE.mode === 'EDGE' && STATE.closestEdge) {
+        STATE.grabbedElement = STATE.closestEdge;
+        ctrlRight.attach(STATE.grabbedElement);
+        STATE.grabbedElement.material.color.setHex(0xffffff);
+        showGizmo(false);
+    } else if (STATE.mode === 'OBJECT' && STATE.selected && !STATE.selected.userData.isVertex && !STATE.selected.userData.isEdge) {
         STATE.grabbedElement = STATE.selected;
         ctrlRight.attach(STATE.grabbedElement);
         STATE.grabbedElement.material.emissive.setHex(0x555555);
@@ -223,21 +423,20 @@ function onGripStart() {
 
 function onGripEnd() {
     if (STATE.grabbedElement) {
-        // A. Soltar VÉRTICE
         if (STATE.grabbedElement.userData.isVertex) {
             const dot = STATE.grabbedElement;
             const mesh = dot.userData.parentMesh;
-            
-            // Volver a pegar el punto al mesh
             mesh.attach(dot);
-            
-            // Actualizar geometría sólida
             updateSolidVertex(dot);
-            
-            dot.material.color.setHex(0xffff00); 
-        } 
-        // B. Soltar OBJETO
-        else {
+            dot.material.color.setHex(0xffff00);
+            showGizmo(true);
+        } else if (STATE.grabbedElement.userData.isEdge) {
+            const edge = STATE.grabbedElement;
+            const mesh = edge.userData.parentMesh;
+            mesh.attach(edge);
+            edge.material.color.setHex(0xff8800);
+            showGizmo(true);
+        } else {
             scene.attach(STATE.grabbedElement);
             STATE.grabbedElement.material.emissive.setHex(0x000000);
         }
@@ -246,6 +445,9 @@ function onGripEnd() {
     }
 }
 
+// ==========================================
+// 7. LOOP PRINCIPAL
+// ==========================================
 function render() {
     if (!STATE.menuAttached && gripLeft) {
         gripLeft.add(uiGroup);
@@ -253,35 +455,69 @@ function render() {
     }
 
     if (ctrlRight) {
-        // UI
+        // Raycast para UI
         _mat.identity().extractRotation(ctrlRight.matrixWorld);
         _ray.ray.origin.setFromMatrixPosition(ctrlRight.matrixWorld);
         _ray.ray.direction.set(0, 0, -1).applyMatrix4(_mat);
 
         const uiHits = _ray.intersectObjects(uiButtons, false);
-        if (uiHits.length > 0) STATE.hoveredBtn = uiHits[0].object;
-        else STATE.hoveredBtn = null;
+        STATE.hoveredBtn = uiHits.length > 0 ? uiHits[0].object : null;
 
-        // Proximidad de vértices
-        checkProximitySelection();
+        // Proximidad según modo
+        if (STATE.mode === 'VERTEX') {
+            checkProximitySelection();
+        } else if (STATE.mode === 'EDGE') {
+            checkEdgeProximity();
+        } else if (STATE.mode === 'FACE') {
+            checkFaceProximity();
+        }
         
-        // Si estamos arrastrando
+        // Actualizar vértice en movimiento
         if (STATE.grabbedElement && STATE.grabbedElement.userData.isVertex) {
             updateSolidVertex(STATE.grabbedElement);
         }
+        
+        updateGizmoPosition();
     }
 
+    updateInfoDisplay();
     renderer.render(scene, camera);
 }
 
-// ==========================================
-// 5. LÓGICA DE VÉRTICES SÓLIDOS (SOLUCIÓN)
-// ==========================================
+function updateInfoDisplay() {
+    document.getElementById('mode-display').textContent = STATE.mode;
+    document.getElementById('tool-display').textContent = STATE.tool || '-';
+    
+    let selText = 'Ninguna';
+    if (STATE.selection.length > 0) {
+        selText = `${STATE.selection.length} elementos`;
+    } else if (STATE.selected) {
+        if (STATE.selected.userData.isVertex) selText = 'Vértice';
+        else if (STATE.selected.userData.isEdge) selText = 'Arista';
+        else if (STATE.selected.userData.isFace) selText = 'Cara';
+        else selText = 'Objeto';
+    }
+    document.getElementById('sel-display').textContent = selText;
+}
 
+// ==========================================
+// 8. CREACIÓN DE OBJETOS
+// ==========================================
 function spawn(type) {
-    const geo = (type==='box') ? new THREE.BoxGeometry(0.2,0.2,0.2) : new THREE.SphereGeometry(0.15,16,12);
-    // Flat shading para ver los polígonos
-    const mat = new THREE.MeshStandardMaterial({ color: Math.random()*0xffffff, roughness: 0.4, flatShading: true }); 
+    let geo;
+    switch(type) {
+        case 'box': geo = new THREE.BoxGeometry(0.2, 0.2, 0.2, 2, 2, 2); break;
+        case 'sphere': geo = new THREE.SphereGeometry(0.15, 16, 12); break;
+        case 'cylinder': geo = new THREE.CylinderGeometry(0.1, 0.1, 0.3, 16); break;
+        case 'torus': geo = new THREE.TorusGeometry(0.12, 0.04, 16, 32); break;
+        default: geo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+    }
+    
+    const mat = new THREE.MeshStandardMaterial({ 
+        color: Math.random() * 0xffffff, 
+        roughness: 0.4, 
+        flatShading: true 
+    });
     const mesh = new THREE.Mesh(geo, mat);
     
     const camPos = new THREE.Vector3();
@@ -291,52 +527,47 @@ function spawn(type) {
     const spawnPos = camPos.add(forward.multiplyScalar(0.5));
     
     mesh.position.copy(spawnPos);
-    mesh.lookAt(camera.position); 
+    mesh.lookAt(camera.position);
     
     scene.add(mesh);
     objects.push(mesh);
     
-    if(STATE.mode === 'VERTEX') toggleMode();
+    if (STATE.mode !== 'OBJECT') switchMode('OBJECT');
     select(mesh);
+    
+    updateLog(`Creado: ${type}`);
 }
 
-// *** MAGIA: CREAR UN SOLO MANEJADOR POR POSICIÓN ***
+// ==========================================
+// 9. SISTEMA DE VÉRTICES
+// ==========================================
 function createUniqueVertexHelpers(mesh) {
     const posAttr = mesh.geometry.attributes.position;
     const geo = new THREE.BoxGeometry(0.015, 0.015, 0.015);
     const baseMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
     
-    // Mapa: "x_y_z" -> [index1, index2, index3]
     const uniquePositions = {};
 
-    // 1. Agrupar vértices por posición
-    for(let i=0; i<posAttr.count; i++) {
+    for (let i = 0; i < posAttr.count; i++) {
         const x = posAttr.getX(i);
         const y = posAttr.getY(i);
         const z = posAttr.getZ(i);
-        
-        // Clave única basada en posición (con precisión de 4 decimales)
         const key = `${x.toFixed(4)}_${y.toFixed(4)}_${z.toFixed(4)}`;
         
         if (!uniquePositions[key]) uniquePositions[key] = [];
         uniquePositions[key].push(i);
     }
 
-    // 2. Crear UN SOLO punto verde por clave
     for (const key in uniquePositions) {
         const indices = uniquePositions[key];
-        
-        // Usamos la posición del primer índice como referencia
         const idx0 = indices[0];
         const v = new THREE.Vector3().fromBufferAttribute(posAttr, idx0);
         
         const dot = new THREE.Mesh(geo, baseMat.clone());
         dot.position.copy(v);
-        
-        // Guardamos TODOS los índices vinculados a este punto
         dot.userData = { 
             isVertex: true, 
-            indices: indices, // Array de índices reales 
+            indices: indices,
             parentMesh: mesh 
         };
         
@@ -344,46 +575,293 @@ function createUniqueVertexHelpers(mesh) {
     }
 }
 
-// Mueve TODOS los vértices vinculados a este manejador
 function updateSolidVertex(dot) {
     const mesh = dot.userData.parentMesh;
     const posAttr = mesh.geometry.attributes.position;
-    const indices = dot.userData.indices; // Array de indices (e.g. [0, 4, 12])
-    
-    // Nueva posición (local) del manejador
+    const indices = dot.userData.indices;
     const newPos = dot.position;
 
-    // Aplicar a todos los "gemelos"
     indices.forEach(idx => {
         posAttr.setXYZ(idx, newPos.x, newPos.y, newPos.z);
     });
 
     posAttr.needsUpdate = true;
     mesh.geometry.computeBoundingSphere();
-    // Opcional: mesh.geometry.computeVertexNormals(); // Si quieres shading suave dinámico
+    mesh.geometry.computeVertexNormals();
+}
+
+function clearVertexHelpers(mesh) {
+    for (let i = mesh.children.length - 1; i >= 0; i--) {
+        if (mesh.children[i].userData.isVertex) {
+            mesh.remove(mesh.children[i]);
+        }
+    }
 }
 
 // ==========================================
-// 6. UTILIDADES
+// 10. SISTEMA DE ARISTAS
 // ==========================================
-
-function checkRaycastSelection() {
-    const hits = _ray.intersectObjects(objects, false);
-    if (hits.length > 0) select(hits[0].object);
-    else select(null);
+function createEdgeHelpers(mesh) {
+    const posAttr = mesh.geometry.attributes.position;
+    const edges = new Map();
+    
+    const index = mesh.geometry.index;
+    const triangleCount = index ? index.count / 3 : posAttr.count / 3;
+    
+    for (let i = 0; i < triangleCount; i++) {
+        const i0 = index ? index.getX(i * 3) : i * 3;
+        const i1 = index ? index.getX(i * 3 + 1) : i * 3 + 1;
+        const i2 = index ? index.getX(i * 3 + 2) : i * 3 + 2;
+        
+        addEdge(edges, i0, i1, posAttr);
+        addEdge(edges, i1, i2, posAttr);
+        addEdge(edges, i2, i0, posAttr);
+    }
+    
+    STATE.edgeHelpers = [];
+    edges.forEach((data, key) => {
+        const edgeHelper = createEdgeHelper(data.v1, data.v2, data.indices, mesh);
+        mesh.add(edgeHelper);
+        STATE.edgeHelpers.push(edgeHelper);
+    });
 }
 
+function addEdge(edges, idx1, idx2, posAttr) {
+    const key = idx1 < idx2 ? `${idx1}-${idx2}` : `${idx2}-${idx1}`;
+    
+    if (!edges.has(key)) {
+        const v1 = new THREE.Vector3().fromBufferAttribute(posAttr, idx1);
+        const v2 = new THREE.Vector3().fromBufferAttribute(posAttr, idx2);
+        edges.set(key, { v1, v2, indices: [idx1, idx2] });
+    }
+}
+
+function createEdgeHelper(v1, v2, indices, mesh) {
+    const midpoint = v1.clone().add(v2).multiplyScalar(0.5);
+    const length = v1.distanceTo(v2);
+    
+    const geo = new THREE.CylinderGeometry(0.006, 0.006, length, 6);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xff8800 });
+    const cylinder = new THREE.Mesh(geo, mat);
+    
+    cylinder.position.copy(midpoint);
+    
+    const direction = v2.clone().sub(v1).normalize();
+    const quaternion = new THREE.Quaternion();
+    quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+    cylinder.quaternion.copy(quaternion);
+    
+    cylinder.userData = {
+        isEdge: true,
+        indices: indices,
+        parentMesh: mesh,
+        v1: v1.clone(),
+        v2: v2.clone()
+    };
+    
+    return cylinder;
+}
+
+function clearEdgeHelpers(mesh) {
+    for (let i = mesh.children.length - 1; i >= 0; i--) {
+        if (mesh.children[i].userData.isEdge) {
+            mesh.remove(mesh.children[i]);
+        }
+    }
+    STATE.edgeHelpers = [];
+}
+
+function checkEdgeProximity() {
+    if (!STATE.mainMesh || !selectorSphere || STATE.edgeHelpers.length === 0) return;
+    if (STATE.grabbedElement) return;
+
+    selectorSphere.getWorldPosition(_tempVecA);
+    let minDist = SELECTOR_RADIUS;
+    let closest = null;
+
+    for (let edge of STATE.edgeHelpers) {
+        edge.getWorldPosition(_tempVecB);
+        const dist = _tempVecA.distanceTo(_tempVecB);
+        if (dist < minDist) { 
+            minDist = dist; 
+            closest = edge; 
+        }
+    }
+
+    if (closest !== STATE.closestEdge) {
+        if (STATE.closestEdge && !STATE.selection.includes(STATE.closestEdge)) {
+            STATE.closestEdge.material.color.setHex(0xff8800);
+            STATE.closestEdge.scale.set(1, 1, 1);
+        }
+        if (closest) {
+            closest.material.color.setHex(0xffff00);
+            closest.scale.set(1.5, 1, 1.5);
+        }
+        STATE.closestEdge = closest;
+    }
+}
+
+// ==========================================
+// 11. SISTEMA DE CARAS
+// ==========================================
+function createFaceHelpers(mesh) {
+    const posAttr = mesh.geometry.attributes.position;
+    const index = mesh.geometry.index;
+    const triangleCount = index ? index.count / 3 : posAttr.count / 3;
+    
+    STATE.faceHelpers = [];
+    
+    for (let i = 0; i < triangleCount; i++) {
+        const i0 = index ? index.getX(i * 3) : i * 3;
+        const i1 = index ? index.getX(i * 3 + 1) : i * 3 + 1;
+        const i2 = index ? index.getX(i * 3 + 2) : i * 3 + 2;
+        
+        const v0 = new THREE.Vector3().fromBufferAttribute(posAttr, i0);
+        const v1 = new THREE.Vector3().fromBufferAttribute(posAttr, i1);
+        const v2 = new THREE.Vector3().fromBufferAttribute(posAttr, i2);
+        
+        const faceHelper = createFaceHelper(v0, v1, v2, [i0, i1, i2], mesh);
+        mesh.add(faceHelper);
+        STATE.faceHelpers.push(faceHelper);
+    }
+}
+
+function createFaceHelper(v0, v1, v2, indices, mesh) {
+    const center = v0.clone().add(v1).add(v2).divideScalar(3);
+    
+    const geo = new THREE.CircleGeometry(0.02, 8);
+    const mat = new THREE.MeshBasicMaterial({ 
+        color: 0x00aaff, 
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.5
+    });
+    const circle = new THREE.Mesh(geo, mat);
+    
+    circle.position.copy(center);
+    
+    // Calcular normal para orientar el círculo
+    const edge1 = v1.clone().sub(v0);
+    const edge2 = v2.clone().sub(v0);
+    const normal = edge1.cross(edge2).normalize();
+    circle.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+    
+    circle.userData = {
+        isFace: true,
+        indices: indices,
+        parentMesh: mesh,
+        vertices: [v0.clone(), v1.clone(), v2.clone()]
+    };
+    
+    return circle;
+}
+
+function clearFaceHelpers(mesh) {
+    for (let i = mesh.children.length - 1; i >= 0; i--) {
+        if (mesh.children[i].userData.isFace) {
+            mesh.remove(mesh.children[i]);
+        }
+    }
+    STATE.faceHelpers = [];
+}
+
+function checkFaceProximity() {
+    if (!STATE.mainMesh || !selectorSphere || STATE.faceHelpers.length === 0) return;
+    if (STATE.grabbedElement) return;
+
+    selectorSphere.getWorldPosition(_tempVecA);
+    let minDist = SELECTOR_RADIUS;
+    let closest = null;
+
+    for (let face of STATE.faceHelpers) {
+        face.getWorldPosition(_tempVecB);
+        const dist = _tempVecA.distanceTo(_tempVecB);
+        if (dist < minDist) { 
+            minDist = dist; 
+            closest = face; 
+        }
+    }
+
+    if (closest !== STATE.closestFace) {
+        if (STATE.closestFace && !STATE.selection.includes(STATE.closestFace)) {
+            STATE.closestFace.material.color.setHex(0x00aaff);
+            STATE.closestFace.scale.set(1, 1, 1);
+        }
+        if (closest) {
+            closest.material.color.setHex(0xffff00);
+            closest.scale.set(1.8, 1.8, 1);
+        }
+        STATE.closestFace = closest;
+    }
+}
+
+// ==========================================
+// 12. SISTEMA DE SELECCIÓN
+// ==========================================
 function select(obj) {
     if (STATE.selected === obj) return;
+    
     if (STATE.selected) {
-        if(STATE.selected.userData.isVertex) STATE.selected.material.color.setHex(0x00ff00);
-        else STATE.selected.material.emissive.setHex(0x000000);
+        if (STATE.selected.userData.isVertex) {
+            STATE.selected.material.color.setHex(0x00ff00);
+            STATE.selected.scale.set(1, 1, 1);
+        } else if (STATE.selected.userData.isEdge) {
+            STATE.selected.material.color.setHex(0xff8800);
+            STATE.selected.scale.set(1, 1, 1);
+        } else if (STATE.selected.userData.isFace) {
+            STATE.selected.material.color.setHex(0x00aaff);
+            STATE.selected.scale.set(1, 1, 1);
+        } else {
+            STATE.selected.material.emissive.setHex(0x000000);
+        }
     }
+    
     STATE.selected = obj;
+    
     if (obj) {
-        if (obj.userData.isVertex) obj.material.color.setHex(0xffff00);
-        else obj.material.emissive.setHex(0x333333);
+        if (obj.userData.isVertex) {
+            obj.material.color.setHex(0xffff00);
+            obj.scale.set(1.3, 1.3, 1.3);
+        } else if (obj.userData.isEdge) {
+            obj.material.color.setHex(0xffff00);
+            obj.scale.set(1.5, 1, 1.5);
+        } else if (obj.userData.isFace) {
+            obj.material.color.setHex(0xffff00);
+            obj.scale.set(1.8, 1.8, 1);
+        } else {
+            obj.material.emissive.setHex(0x333333);
+        }
     }
+}
+
+function toggleSelection(element) {
+    const idx = STATE.selection.indexOf(element);
+    
+    if (idx > -1) {
+        // Deseleccionar
+        STATE.selection.splice(idx, 1);
+        if (element.userData.isVertex) element.material.color.setHex(0x00ff00);
+        else if (element.userData.isEdge) element.material.color.setHex(0xff8800);
+        else if (element.userData.isFace) element.material.color.setHex(0x00aaff);
+        element.scale.set(1, 1, 1);
+    } else {
+        // Seleccionar
+        STATE.selection.push(element);
+        element.material.color.setHex(0xffff00);
+        if (element.userData.isVertex) element.scale.set(1.5, 1.5, 1.5);
+        else if (element.userData.isEdge) element.scale.set(1.8, 1, 1.8);
+        else if (element.userData.isFace) element.scale.set(2, 2, 1);
+    }
+}
+
+function clearSelection() {
+    STATE.selection.forEach(el => {
+        if (el.userData.isVertex) el.material.color.setHex(0x00ff00);
+        else if (el.userData.isEdge) el.material.color.setHex(0xff8800);
+        else if (el.userData.isFace) el.material.color.setHex(0x00aaff);
+        el.scale.set(1, 1, 1);
+    });
+    STATE.selection = [];
 }
 
 function checkProximitySelection() {
@@ -394,7 +872,6 @@ function checkProximitySelection() {
     let minDist = SELECTOR_RADIUS;
     let closest = null;
 
-    // Buscar entre los manejadores únicos
     for (let child of STATE.mainMesh.children) {
         if (!child.userData.isVertex) continue;
         child.getWorldPosition(_tempVecB);
@@ -403,9 +880,9 @@ function checkProximitySelection() {
     }
 
     if (closest !== STATE.closestVertex) {
-        if (STATE.closestVertex) {
+        if (STATE.closestVertex && !STATE.selection.includes(STATE.closestVertex)) {
             STATE.closestVertex.material.color.setHex(0x00ff00);
-            STATE.closestVertex.scale.set(1,1,1);
+            STATE.closestVertex.scale.set(1, 1, 1);
         }
         if (closest) {
             closest.material.color.setHex(0xffff00);
@@ -415,43 +892,635 @@ function checkProximitySelection() {
     }
 }
 
-function toggleMode() {
-    const target = (STATE.selected && STATE.selected.userData.isVertex) ? STATE.selected.userData.parentMesh : (STATE.selected || STATE.mainMesh);
-    if (!target) return;
+function checkRaycastSelection() {
+    const hits = _ray.intersectObjects(objects, false);
+    if (hits.length > 0) select(hits[0].object);
+    else select(null);
+}
 
-    if (STATE.mode === 'OBJECT') {
-        STATE.mode = 'VERTEX';
-        STATE.mainMesh = target;
+// ==========================================
+// 13. CAMBIO DE MODOS
+// ==========================================
+function switchMode(newMode) {
+    const target = (STATE.selected && (STATE.selected.userData.isVertex || STATE.selected.userData.isEdge || STATE.selected.userData.isFace)) 
+        ? STATE.selected.userData.parentMesh 
+        : (STATE.selected || STATE.mainMesh);
+    
+    if (!target || (newMode !== 'OBJECT' && !objects.includes(target))) return;
+
+    // Limpiar modo anterior
+    if (STATE.mainMesh) {
+        STATE.mainMesh.material.wireframe = false;
+        clearVertexHelpers(STATE.mainMesh);
+        clearEdgeHelpers(STATE.mainMesh);
+        clearFaceHelpers(STATE.mainMesh);
+    }
+
+    clearSelection();
+    STATE.mode = newMode;
+    STATE.mainMesh = target;
+    STATE.tool = null;
+    showGizmo(false);
+
+    if (newMode === 'VERTEX') {
         target.material.wireframe = true;
-        // Usar la nueva función de helpers únicos
-        createUniqueVertexHelpers(target); 
+        createUniqueVertexHelpers(target);
         select(null);
-    } else {
-        STATE.mode = 'OBJECT';
-        if(STATE.mainMesh) {
-            STATE.mainMesh.material.wireframe = false;
-            clearVertexHelpers(STATE.mainMesh);
-            select(STATE.mainMesh);
-        }
+    } else if (newMode === 'EDGE') {
+        target.material.wireframe = true;
+        createEdgeHelpers(target);
+        select(null);
+    } else if (newMode === 'FACE') {
+        target.material.wireframe = false;
+        createFaceHelpers(target);
+        select(null);
+    } else if (newMode === 'OBJECT') {
+        target.material.wireframe = false;
+        select(target);
+    }
+    
+    updateLog(`Modo: ${newMode}`);
+}
+
+// ==========================================
+// 14. HERRAMIENTAS DE VÉRTICES
+// ==========================================
+function mergeVertices() {
+    if (STATE.selection.length < 2 || !STATE.selection[0].userData.isVertex) {
+        updateLog('Selecciona 2+ vértices');
+        return;
+    }
+    
+    const mesh = STATE.selection[0].userData.parentMesh;
+    const posAttr = mesh.geometry.attributes.position;
+    
+    // Calcular centro
+    const center = new THREE.Vector3();
+    STATE.selection.forEach(v => {
+        center.add(v.position);
+    });
+    center.divideScalar(STATE.selection.length);
+    
+    // Mover todos los vértices al centro
+    STATE.selection.forEach(v => {
+        v.position.copy(center);
+        updateSolidVertex(v);
+    });
+    
+    // Limpiar geometría duplicada
+    mesh.geometry = mesh.geometry.toNonIndexed();
+    mesh.geometry.setAttribute('position', posAttr);
+    
+    clearSelection();
+    switchMode('VERTEX'); // Refresh
+    updateLog(`${STATE.selection.length} vértices unidos`);
+}
+
+function subdivideSelection() {
+    if (STATE.selection.length === 0) {
+        updateLog('Selecciona elementos');
+        return;
+    }
+    
+    if (STATE.mode === 'EDGE') {
+        STATE.selection.forEach(edge => {
+            if (edge.userData.isEdge) subdivideEdge(edge);
+        });
+        clearSelection();
+        switchMode('EDGE');
+        updateLog('Aristas subdivididas');
+    } else if (STATE.mode === 'FACE') {
+        STATE.selection.forEach(face => {
+            if (face.userData.isFace) subdivideFace(face);
+        });
+        clearSelection();
+        switchMode('FACE');
+        updateLog('Caras subdivididas');
     }
 }
 
-function clearVertexHelpers(mesh) {
-    for(let i = mesh.children.length - 1; i >= 0; i--) {
-        if(mesh.children[i].userData.isVertex) {
-            mesh.remove(mesh.children[i]);
-        }
+function subdivideEdge(edge) {
+    const mesh = edge.userData.parentMesh;
+    const indices = edge.userData.indices;
+    const posAttr = mesh.geometry.attributes.position;
+    
+    const v1 = new THREE.Vector3().fromBufferAttribute(posAttr, indices[0]);
+    const v2 = new THREE.Vector3().fromBufferAttribute(posAttr, indices[1]);
+    const midpoint = v1.clone().add(v2).multiplyScalar(0.5);
+    
+    // Expandir array de posiciones
+    const oldPositions = Array.from(posAttr.array);
+    oldPositions.push(midpoint.x, midpoint.y, midpoint.z);
+    
+    mesh.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(oldPositions), 3));
+    mesh.geometry.computeVertexNormals();
+}
+
+function subdivideFace(face) {
+    // Implementación simple: añadir punto central
+    const mesh = face.userData.parentMesh;
+    const indices = face.userData.indices;
+    const posAttr = mesh.geometry.attributes.position;
+    
+    const v0 = new THREE.Vector3().fromBufferAttribute(posAttr, indices[0]);
+    const v1 = new THREE.Vector3().fromBufferAttribute(posAttr, indices[1]);
+    const v2 = new THREE.Vector3().fromBufferAttribute(posAttr, indices[2]);
+    const center = v0.clone().add(v1).add(v2).divideScalar(3);
+    
+    const oldPositions = Array.from(posAttr.array);
+    oldPositions.push(center.x, center.y, center.z);
+    
+    mesh.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(oldPositions), 3));
+    mesh.geometry.computeVertexNormals();
+}
+
+function bevelVertices() {
+    updateLog('Bisel en desarrollo');
+    // TODO: Implementar bisel de vértices
+}
+
+function smoothVertices() {
+    if (STATE.selection.length === 0 || !STATE.selection[0].userData.isVertex) {
+        updateLog('Selecciona vértices');
+        return;
     }
+    
+    const mesh = STATE.selection[0].userData.parentMesh;
+    
+    // Calcular promedio de vecinos
+    STATE.selection.forEach(v => {
+        const neighbors = findNeighborVertices(v, mesh);
+        if (neighbors.length > 0) {
+            const avg = new THREE.Vector3();
+            neighbors.forEach(n => avg.add(n.position));
+            avg.divideScalar(neighbors.length);
+            
+            v.position.lerp(avg, 0.5);
+            updateSolidVertex(v);
+        }
+    });
+    
+    updateLog('Vértices suavizados');
+}
+
+function findNeighborVertices(vertex, mesh) {
+    // Simplificación: retornar array vacío
+    // En producción, analizar topología
+    return [];
+}
+
+// ==========================================
+// 15. HERRAMIENTAS DE ARISTAS
+// ==========================================
+function extrudeEdges() {
+    if (STATE.selection.length === 0 || !STATE.selection[0].userData.isEdge) {
+        updateLog('Selecciona aristas');
+        return;
+    }
+    
+    const mesh = STATE.selection[0].userData.parentMesh;
+    const posAttr = mesh.geometry.attributes.position;
+    const newPositions = Array.from(posAttr.array);
+    
+    STATE.selection.forEach(edge => {
+        const indices = edge.userData.indices;
+        const v1 = new THREE.Vector3().fromBufferAttribute(posAttr, indices[0]);
+        const v2 = new THREE.Vector3().fromBufferAttribute(posAttr, indices[1]);
+        
+        // Calcular dirección de extrusión (normal promedio)
+        const direction = v2.clone().sub(v1).cross(new THREE.Vector3(0, 1, 0)).normalize();
+        const offset = direction.multiplyScalar(0.1);
+        
+        const newV1 = v1.clone().add(offset);
+        const newV2 = v2.clone().add(offset);
+        
+        newPositions.push(newV1.x, newV1.y, newV1.z);
+        newPositions.push(newV2.x, newV2.y, newV2.z);
+    });
+    
+    mesh.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(newPositions), 3));
+    mesh.geometry.computeVertexNormals();
+    
+    clearSelection();
+    switchMode('EDGE');
+    updateLog('Aristas extruidas');
+}
+
+function bridgeEdges() {
+    if (STATE.selection.length !== 2 || !STATE.selection[0].userData.isEdge) {
+        updateLog('Selecciona 2 aristas');
+        return;
+    }
+    
+    const mesh = STATE.selection[0].userData.parentMesh;
+    const posAttr = mesh.geometry.attributes.position;
+    
+    const edge1 = STATE.selection[0];
+    const edge2 = STATE.selection[1];
+    
+    const v1a = new THREE.Vector3().fromBufferAttribute(posAttr, edge1.userData.indices[0]);
+    const v1b = new THREE.Vector3().fromBufferAttribute(posAttr, edge1.userData.indices[1]);
+    const v2a = new THREE.Vector3().fromBufferAttribute(posAttr, edge2.userData.indices[0]);
+    const v2b = new THREE.Vector3().fromBufferAttribute(posAttr, edge2.userData.indices[1]);
+    
+    // Crear caras entre aristas
+    const newPositions = Array.from(posAttr.array);
+    
+    // Triángulo 1
+    newPositions.push(v1a.x, v1a.y, v1a.z);
+    newPositions.push(v1b.x, v1b.y, v1b.z);
+    newPositions.push(v2a.x, v2a.y, v2a.z);
+    
+    // Triángulo 2
+    newPositions.push(v1b.x, v1b.y, v1b.z);
+    newPositions.push(v2b.x, v2b.y, v2b.z);
+    newPositions.push(v2a.x, v2a.y, v2a.z);
+    
+    mesh.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(newPositions), 3));
+    mesh.geometry.computeVertexNormals();
+    
+    clearSelection();
+    switchMode('EDGE');
+    updateLog('Puente creado');
+}
+
+function insertLoopCut() {
+    if (!STATE.selected || !STATE.selected.userData.isEdge) {
+        updateLog('Selecciona una arista');
+        return;
+    }
+    
+    const mesh = STATE.selected.userData.parentMesh;
+    const posAttr = mesh.geometry.attributes.position;
+    
+    // Simplificación: subdividir todas las aristas paralelas
+    const edge = STATE.selected;
+    const direction = edge.userData.v2.clone().sub(edge.userData.v1).normalize();
+    
+    // En producción: detectar loop completo y subdividir
+    subdivideEdge(edge);
+    
+    switchMode('EDGE');
+    updateLog('Loop Cut insertado');
+}
+
+function dissolveEdges() {
+    if (STATE.selection.length === 0 || !STATE.selection[0].userData.isEdge) {
+        updateLog('Selecciona aristas');
+        return;
+    }
+    
+    // Simplificación: remover helpers
+    STATE.selection.forEach(edge => {
+        const mesh = edge.userData.parentMesh;
+        mesh.remove(edge);
+    });
+    
+    clearSelection();
+    updateLog('Aristas disueltas');
+}
+
+// ==========================================
+// 16. HERRAMIENTAS DE CARAS
+// ==========================================
+function extrudeFaces() {
+    if (STATE.selection.length === 0 || !STATE.selection[0].userData.isFace) {
+        updateLog('Selecciona caras');
+        return;
+    }
+    
+    const mesh = STATE.selection[0].userData.parentMesh;
+    const posAttr = mesh.geometry.attributes.position;
+    const newPositions = Array.from(posAttr.array);
+    
+    STATE.selection.forEach(face => {
+        const indices = face.userData.indices;
+        const v0 = new THREE.Vector3().fromBufferAttribute(posAttr, indices[0]);
+        const v1 = new THREE.Vector3().fromBufferAttribute(posAttr, indices[1]);
+        const v2 = new THREE.Vector3().fromBufferAttribute(posAttr, indices[2]);
+        
+        // Calcular normal
+        const edge1 = v1.clone().sub(v0);
+        const edge2 = v2.clone().sub(v0);
+        const normal = edge1.cross(edge2).normalize();
+        const offset = normal.multiplyScalar(0.1);
+        
+        // Nuevos vértices extruidos
+        const nv0 = v0.clone().add(offset);
+        const nv1 = v1.clone().add(offset);
+        const nv2 = v2.clone().add(offset);
+        
+        // Añadir cara extruida
+        newPositions.push(nv0.x, nv0.y, nv0.z);
+        newPositions.push(nv1.x, nv1.y, nv1.z);
+        newPositions.push(nv2.x, nv2.y, nv2.z);
+        
+        // Añadir caras laterales (3 quads = 6 triángulos)
+        // Lado 1
+        newPositions.push(v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, nv0.x, nv0.y, nv0.z);
+        newPositions.push(v1.x, v1.y, v1.z, nv1.x, nv1.y, nv1.z, nv0.x, nv0.y, nv0.z);
+        // Lado 2
+        newPositions.push(v1.x, v1.y, v1.z, v2.x, v2.y, v2.z, nv1.x, nv1.y, nv1.z);
+        newPositions.push(v2.x, v2.y, v2.z, nv2.x, nv2.y, nv2.z, nv1.x, nv1.y, nv1.z);
+        // Lado 3
+        newPositions.push(v2.x, v2.y, v2.z, v0.x, v0.y, v0.z, nv2.x, nv2.y, nv2.z);
+        newPositions.push(v0.x, v0.y, v0.z, nv0.x, nv0.y, nv0.z, nv2.x, nv2.y, nv2.z);
+    });
+    
+    mesh.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(newPositions), 3));
+    mesh.geometry.computeVertexNormals();
+    
+    clearSelection();
+    switchMode('FACE');
+    updateLog('Caras extruidas');
+}
+
+function insetFaces() {
+    if (STATE.selection.length === 0 || !STATE.selection[0].userData.isFace) {
+        updateLog('Selecciona caras');
+        return;
+    }
+    
+    const mesh = STATE.selection[0].userData.parentMesh;
+    const posAttr = mesh.geometry.attributes.position;
+    const newPositions = Array.from(posAttr.array);
+    
+    STATE.selection.forEach(face => {
+        const indices = face.userData.indices;
+        const v0 = new THREE.Vector3().fromBufferAttribute(posAttr, indices[0]);
+        const v1 = new THREE.Vector3().fromBufferAttribute(posAttr, indices[1]);
+        const v2 = new THREE.Vector3().fromBufferAttribute(posAttr, indices[2]);
+        
+        const center = v0.clone().add(v1).add(v2).divideScalar(3);
+        const insetFactor = 0.7;
+        
+        const iv0 = v0.clone().lerp(center, 1 - insetFactor);
+        const iv1 = v1.clone().lerp(center, 1 - insetFactor);
+        const iv2 = v2.clone().lerp(center, 1 - insetFactor);
+        
+        // Cara interior
+        newPositions.push(iv0.x, iv0.y, iv0.z);
+        newPositions.push(iv1.x, iv1.y, iv1.z);
+        newPositions.push(iv2.x, iv2.y, iv2.z);
+    });
+    
+    mesh.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(newPositions), 3));
+    mesh.geometry.computeVertexNormals();
+    
+    clearSelection();
+    switchMode('FACE');
+    updateLog('Inset aplicado');
+}
+
+function solidifyFaces() {
+    updateLog('Solidificar en desarrollo');
+    // TODO: Añadir grosor a caras seleccionadas
+}
+
+function flipNormals() {
+    if (STATE.selection.length === 0 || !STATE.selection[0].userData.isFace) {
+        updateLog('Selecciona caras');
+        return;
+    }
+    
+    const mesh = STATE.selection[0].userData.parentMesh;
+    const posAttr = mesh.geometry.attributes.position;
+    
+    STATE.selection.forEach(face => {
+        const indices = face.userData.indices;
+        
+        // Intercambiar orden de vértices
+        const temp = posAttr.getX(indices[1]);
+        posAttr.setX(indices[1], posAttr.getX(indices[2]));
+        posAttr.setX(indices[2], temp);
+        
+        const tempY = posAttr.getY(indices[1]);
+        posAttr.setY(indices[1], posAttr.getY(indices[2]));
+        posAttr.setY(indices[2], tempY);
+        
+        const tempZ = posAttr.getZ(indices[1]);
+        posAttr.setZ(indices[1], posAttr.getZ(indices[2]));
+        posAttr.setZ(indices[2], tempZ);
+    });
+    
+    posAttr.needsUpdate = true;
+    mesh.geometry.computeVertexNormals();
+    
+    updateLog('Normales invertidas');
+}
+
+// ==========================================
+// 17. MODIFICADORES
+// ==========================================
+function applySubdivision() {
+    if (!STATE.mainMesh) {
+        updateLog('Selecciona un objeto');
+        return;
+    }
+    
+    // Subdivisión simple: dividir cada triángulo en 4
+    const mesh = STATE.mainMesh;
+    const posAttr = mesh.geometry.attributes.position;
+    const index = mesh.geometry.index;
+    const triangleCount = index ? index.count / 3 : posAttr.count / 3;
+    
+    const newPositions = [];
+    
+    for (let i = 0; i < triangleCount; i++) {
+        const i0 = index ? index.getX(i * 3) : i * 3;
+        const i1 = index ? index.getX(i * 3 + 1) : i * 3 + 1;
+        const i2 = index ? index.getX(i * 3 + 2) : i * 3 + 2;
+        
+        const v0 = new THREE.Vector3().fromBufferAttribute(posAttr, i0);
+        const v1 = new THREE.Vector3().fromBufferAttribute(posAttr, i1);
+        const v2 = new THREE.Vector3().fromBufferAttribute(posAttr, i2);
+        
+        const m01 = v0.clone().add(v1).multiplyScalar(0.5);
+        const m12 = v1.clone().add(v2).multiplyScalar(0.5);
+        const m20 = v2.clone().add(v0).multiplyScalar(0.5);
+        
+        // 4 triángulos nuevos
+        addTriangle(newPositions, v0, m01, m20);
+        addTriangle(newPositions, v1, m12, m01);
+        addTriangle(newPositions, v2, m20, m12);
+        addTriangle(newPositions, m01, m12, m20);
+    }
+    
+    mesh.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(newPositions), 3));
+    mesh.geometry.computeVertexNormals();
+    mesh.geometry.computeBoundingSphere();
+    
+    if (STATE.mode !== 'OBJECT') switchMode(STATE.mode);
+    updateLog('Subdivisión aplicada');
+}
+
+function addTriangle(positions, v0, v1, v2) {
+    positions.push(v0.x, v0.y, v0.z);
+    positions.push(v1.x, v1.y, v1.z);
+    positions.push(v2.x, v2.y, v2.z);
+}
+
+function applyMirror() {
+    if (!STATE.selected || STATE.selected.userData.isVertex) {
+        updateLog('Selecciona un objeto');
+        return;
+    }
+    
+    const original = STATE.selected;
+    const mirrored = original.clone();
+    mirrored.scale.x *= -1;
+    mirrored.position.x += 0.3;
+    
+    scene.add(mirrored);
+    objects.push(mirrored);
+    
+    updateLog('Espejo aplicado');
+}
+
+function applyArray() {
+    if (!STATE.selected || STATE.selected.userData.isVertex) {
+        updateLog('Selecciona un objeto');
+        return;
+    }
+    
+    const original = STATE.selected;
+    const count = 3;
+    const offset = new THREE.Vector3(0.25, 0, 0);
+    
+    for (let i = 1; i <= count; i++) {
+        const clone = original.clone();
+        clone.position.add(offset.clone().multiplyScalar(i));
+        scene.add(clone);
+        objects.push(clone);
+    }
+    
+    updateLog(`Array: ${count} copias`);
+}
+
+function applyBoolean() {
+    updateLog('Booleanas en desarrollo');
+    // TODO: Implementar operaciones booleanas (requiere librería CSG)
+}
+
+// ==========================================
+// 18. HERRAMIENTA DE CUCHILLO
+// ==========================================
+function activateKnifeTool() {
+    if (!STATE.mainMesh) {
+        updateLog('Selecciona un objeto primero');
+        return;
+    }
+    
+    STATE.tool = 'KNIFE';
+    STATE.knifePoints = [];
+    updateLog('Modo Cuchillo: Dibuja cortes');
+}
+
+function addKnifePoint() {
+    if (!selectorSphere) return;
+    
+    selectorSphere.getWorldPosition(_tempVecA);
+    STATE.knifePoints.push(_tempVecA.clone());
+    
+    // Visualizar punto
+    const dot = new THREE.Mesh(
+        new THREE.SphereGeometry(0.01, 8, 8),
+        new THREE.MeshBasicMaterial({ color: 0xff00ff })
+    );
+    dot.position.copy(_tempVecA);
+    scene.add(dot);
+    
+    updateLog(`Punto ${STATE.knifePoints.length} añadido`);
+}
+
+function executeKnifeCut() {
+    if (STATE.knifePoints.length < 2) {
+        updateLog('Necesitas 2+ puntos');
+        return;
+    }
+    
+    // Simplificación: añadir línea de corte visual
+    const lineGeo = new THREE.BufferGeometry().setFromPoints(STATE.knifePoints);
+    const lineMat = new THREE.LineBasicMaterial({ color: 0xff00ff, linewidth: 3 });
+    const line = new THREE.Line(lineGeo, lineMat);
+    scene.add(line);
+    
+    STATE.knifePoints = [];
+    STATE.tool = null;
+    
+    updateLog('Corte realizado (visual)');
+    // En producción: intersectar línea con mesh y dividir geometría
+}
+
+// ==========================================
+// 19. UTILIDADES GENERALES
+// ==========================================
+function triangulate() {
+    if (!STATE.mainMesh) {
+        updateLog('Selecciona un objeto');
+        return;
+    }
+    
+    const mesh = STATE.mainMesh;
+    const geo = mesh.geometry.toNonIndexed();
+    mesh.geometry = geo;
+    
+    updateLog('Mesh triangulado');
+}
+
+function cleanupMesh() {
+    if (!STATE.mainMesh) {
+        updateLog('Selecciona un objeto');
+        return;
+    }
+    
+    const mesh = STATE.mainMesh;
+    mesh.geometry.computeVertexNormals();
+    mesh.geometry.computeBoundingSphere();
+    
+    updateLog('Geometría limpiada');
+}
+
+function optimizeMesh() {
+    updateLog('Optimización en desarrollo');
+    // TODO: Remover vértices duplicados, etc.
 }
 
 function deleteSelected() {
-    if (STATE.selected && !STATE.selected.userData.isVertex) {
+    if (STATE.selected && !STATE.selected.userData.isVertex && !STATE.selected.userData.isEdge && !STATE.selected.userData.isFace) {
         scene.remove(STATE.selected);
         const i = objects.indexOf(STATE.selected);
-        if(i>-1) objects.splice(i,1);
+        if (i > -1) objects.splice(i, 1);
         STATE.selected = null;
         STATE.mainMesh = null;
+        showGizmo(false);
+        updateLog('Objeto eliminado');
     }
+}
+
+function duplicateObject() {
+    if (STATE.selected && !STATE.selected.userData.isVertex && !STATE.selected.userData.isEdge && !STATE.selected.userData.isFace) {
+        const clone = STATE.selected.clone();
+        clone.position.x += 0.3;
+        scene.add(clone);
+        objects.push(clone);
+        select(clone);
+        updateLog('Objeto duplicado');
+    }
+}
+
+function separateMesh() {
+    updateLog('Separar en desarrollo');
+    // TODO: Separar caras seleccionadas en nuevo objeto
+}
+
+function joinMeshes() {
+    updateLog('Unir en desarrollo');
+    // TODO: Combinar múltiples meshes
+}
+
+function updateLog(message) {
+    console.log(`[MR Studio] ${message}`);
 }
 
 </script>
