@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MR Studio Pro - Blender VR Edition</title>
+    <style>
+        body { 
+            margin: 0; 
+            background: #000; 
+            overflow: hidden; 
+            font-family: 'Segoe UI', sans-serif; 
+            color: #fff; 
+        }
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            background: rgba(0,0,0,0.95); z-index: 999;
+        }
+        button {
+            padding: 20px 60px; font-size: 22px; background: #2b7fdb; border: none;
+            border-radius: 8px; font-weight: 600; cursor: pointer; color: white;
+            box-shadow: 0 4px 20px rgba(43,127,219,0.4);
+            transition: all 0.3s;
+        }
+        button:hover { background: #3d8fe6; transform: translateY(-2px); }
+        
+        #info-panel {
+            position: absolute; top: 10px; right: 10px; 
+            background: rgba(0,0,0,0.8); padding: 15px; 
+            border-radius: 8px; font-size: 11px; 
+            border: 1px solid rgba(43,127,219,0.3);
+            min-width: 200px;
+        }
+        .info-row { display: flex; justify-content: space-between; margin: 5px 0; }
+        .info-label { color: #888; font-weight: 600; }
+        .info-value { color: #2b7fdb; font-weight: 700; }
+        
+        .status-bar {
+            position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.85); padding: 10px 20px; border-radius: 20px;
+            font-size: 12px; border: 1px solid rgba(43,127,219,0.4);
+        }
+    </style>
+</head>
+<body>
+
+<div id="overlay">
+    <h1 style="font-size: 48px; margin-bottom: 10px; color: #2b7fdb;">⚡ MR STUDIO PRO</h1>
+    <p style="font-size: 18px; color: #888; margin-bottom: 30px;">Blender-Style 3D Editor para Meta Quest</p>
+    <button id="btn-start">INICIAR SESIÓN VR</button>
+</div>
+
+<div id="info-panel">
+    <div style="font-size: 14px; font-weight: bold; margin-bottom: 10px; color: #2b7fdb;">📊 INFORMACIÓN</div>
+    <div class="info-row"><span class="info-label">Modo:</span><span class="info-value" id="mode-display">OBJECT</span></div>
+    <div class="info-row"><span class="info-label">Herramienta:</span><span class="info-value" id="tool-display">Seleccionar</span></div>
+    <div class="info-row"><span class="info-label">Selección:</span><span class="info-value" id="sel-display">Ninguna</span></div>
+    <div class="info-row"><span class="info-label">Transform:</span><span class="info-value" id="transform-display">Global</span></div>
+    <div class="info-row"><span class="info-label">Shading:</span><span class="info-value" id="shading-display">Solid</span></div>
+    <div class="info-row"><span class="info-label">Vértices:</span><span class="info-value" id="vert-count">0</span></div>
+    <div class="info-row"><span class="info-label">Caras:</span><span class="info-value" id="face-count">0</span></div>
+</div>
+
+<div class="status-bar" id="status-bar">
+    Gatillo Izq: Menú | Grip Izq: Mover Mundo | Gatillo Der: Seleccionar
+</div>
+
+<script type="importmap">
+{
+    "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+
+// ==========================================
+// CONFIGURACIÓN Y VARIABLES GLOBALES
+// ==========================================
+let scene, camera, renderer;
+let dolly; // Grupo contenedor para mover al usuario
+let ctrlRight, ctrlLeft, gripLeft, gripRight;
+let uiPanel;
+const objects = [];
+
+// Selectores táctiles
+let selectorSphereRight, selectorSphereLeft;
+const SELECTOR_RADIUS = 0.08;
+
+// Variables auxiliares
+const _tempVecA = new THREE.Vector3();
+const _tempVecB = new THREE.Vector3();
+const _ray = new THREE.Raycaster();
+const _mat = new THREE.Matrix4();
+
+// Variables de Locomoción (Mano Izquierda)
+const worldDragState = {
+    active: false,
+    startPos: new THREE.Vector3(),
+    dollyStartPos: new THREE.Vector3(),
+    currentControllerPos: new THREE.Vector3()
+};
+
+// Gizmo de transformación
+let gizmo = null;
+let gizmoHandles = [];
+
+// ESTADO PRINCIPAL
+const STATE = {
+    mode: 'OBJECT',           // OBJECT, EDIT
+    editMode: 'VERTEX',       // VERTEX, EDGE, FACE
+    tool: 'SELECT',           // SELECT, MOVE, ROTATE, SCALE
+    transform: 'GLOBAL',      // GLOBAL, LOCAL, NORMAL
+    shading: 'SOLID',         // SOLID, WIREFRAME, MATERIAL, RENDERED
+    
+    selected: null,
+    mainMesh: null,
+    selection: [],
+    
+    hoveredBtn: null,
+    grabbedElement: null,
+    grabbedGizmoAxis: null,
+    
+    menuVisible: false,
+    
+    closestVertex: null,
+    closestEdge: null,
+    closestFace: null,
+    
+    vertexHelpers: [],
+    edgeHelpers: [],
+    faceHelpers: [],
+    
+    colors: {
+        selected: 0xffa500,
+        vertex: 0x00ff00,
+        edge: 0xff8800,
+        face: 0x00aaff,
+        highlight: 0xffff00
+    }
+};
+
+// UI
+const UI = {
+    panel: null,
+    buttons: [],
+    propertiesWindow: null
+};
+
+init();
+
+// ==========================================
+// INICIALIZACIÓN
+// ==========================================
+function init() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1a1a);
+    scene.fog = new THREE.Fog(0x1a1a1a, 5, 20);
+
+    // Sistema de Dolly (Rig) para mover al usuario
+    dolly = new THREE.Group();
+    dolly.position.set(0, 0, 0);
+    scene.add(dolly);
+
+    // Iluminación
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.5);
+    keyLight.position.set(5, 10, 7.5);
+    keyLight.castShadow = true;
+    scene.add(keyLight);
+    
+    const fillLight = new THREE.DirectionalLight(0x6699ff, 0.8);
+    fillLight.position.set(-5, 5, -5);
+    scene.add(fillLight);
+    
+    scene.add(new THREE.AmbientLight(0x404060, 0.4));
+    
+    // Grid y Referencias
+    const gridHelper = new THREE.GridHelper(20, 40, 0x444444, 0x222222);
+    scene.add(gridHelper);
+    
+    const axesHelper = new THREE.AxesHelper(1);
+    axesHelper.position.set(-2, 0.01, -2);
+    scene.add(axesHelper);
+
+    camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.01, 100);
+    camera.position.set(0, 1.6, 0);
+    dolly.add(camera); // Cámara dentro del dolly
+
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.xr.enabled = true;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    setupControllers();
+    createGizmo();
+    createUIPanel();
+    createPropertiesWindow();
+
+    document.getElementById('btn-start').addEventListener('click', () => {
+        navigator.xr.requestSession('immersive-vr', { 
+            optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] 
+        }).then(session => {
+            renderer.xr.setSession(session);
+            document.getElementById('overlay').style.display = 'none';
+            scene.background = null;
+        });
+    });
+
+    renderer.setAnimationLoop(render);
+}
+
+// ==========================================
+// CONTROLADORES VR
+// ==========================================
+function setupControllers() {
+    const modelFactory = new XRControllerModelFactory();
+
+    // Controllers (Rayos)
+    ctrlRight = renderer.xr.getController(0);
+    ctrlLeft = renderer.xr.getController(1);
+    
+    // Grips (Modelos visuales de las manos/mandos)
+    gripRight = renderer.xr.getControllerGrip(0);
+    gripRight.add(modelFactory.createControllerModel(gripRight));
+    
+    gripLeft = renderer.xr.getControllerGrip(1);
+    gripLeft.add(modelFactory.createControllerModel(gripLeft));
+
+    // Añadir al Dolly en lugar de a la escena directamente
+    dolly.add(ctrlRight, ctrlLeft, gripRight, gripLeft);
+
+    setupControllerVisuals(ctrlRight, 'right');
+    setupControllerVisuals(ctrlLeft, 'left');
+
+    setupControllerEvents();
+}
+
+function setupControllerVisuals(controller, handedness) {
+    // Esfera selectora
+    const geo = new THREE.SphereGeometry(0.01, 16, 16);
+    const mat = new THREE.MeshBasicMaterial({ color: handedness === 'right' ? 0xff3333 : 0x3333ff, transparent: true, opacity: 0.8 });
+    const sphere = new THREE.Mesh(geo, mat);
+    sphere.position.set(0, -0.015, -0.05);
+    controller.add(sphere);
+
+    if (handedness === 'right') selectorSphereRight = sphere;
+    else selectorSphereLeft = sphere;
+    
+    // Rayo
+    const lineGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, -2)
+    ]);
+    const lineMat = new THREE.LineBasicMaterial({ color: 0x2b7fdb, opacity: 0.3, transparent: true });
+    const line = new THREE.Line(lineGeo, lineMat);
+    controller.add(line);
+}
+
+function setupControllerEvents() {
+    // --- DERECHO (Interacción Principal) ---
+    ctrlRight.addEventListener('selectstart', onRightTriggerStart);
+    ctrlRight.addEventListener('selectend', onRightTriggerEnd);
+    ctrlRight.addEventListener('squeezestart', onRightGripStart);
+    ctrlRight.addEventListener('squeezeend', onRightGripEnd);
+
+    // --- IZQUIERDO (Navegación y UI) ---
+    // Gatillo: Interactuar UI / Toggle Menú
+    ctrlLeft.addEventListener('selectstart', onLeftTriggerStart);
+    
+    // Grip: Mover Mundo (Drag World)
+    ctrlLeft.addEventListener('squeezestart', onLeftGripStart);
+    ctrlLeft.addEventListener('squeezeend', onLeftGripEnd);
+}
+
+// ==========================================
+// GIZMO DE TRANSFORMACIÓN
+// ==========================================
+function createGizmo() {
+    gizmo = new THREE.Group();
+    gizmo.visible = false;
+    
+    const size = 0.12;
+    const thickness = 0.004;
+    
+    const xGroup = createGizmoAxis(0xff0000, new THREE.Vector3(1, 0, 0), size, thickness);
+    xGroup.userData = { axis: 'x' };
+    gizmo.add(xGroup);
+    gizmoHandles.push(xGroup);
+    
+    const yGroup = createGizmoAxis(0x00ff00, new THREE.Vector3(0, 1, 0), size, thickness);
+    yGroup.userData = { axis: 'y' };
+    gizmo.add(yGroup);
+    gizmoHandles.push(yGroup);
+    
+    const zGroup = createGizmoAxis(0x0000ff, new THREE.Vector3(0, 0, 1), size, thickness);
+    zGroup.userData = { axis: 'z' };
+    gizmo.add(zGroup);
+    gizmoHandles.push(zGroup);
+    
+    const centerGeo = new THREE.SphereGeometry(0.015, 12, 12);
+    const centerMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
+    const center = new THREE.Mesh(centerGeo, centerMat);
+    center.userData = { axis: 'xyz' };
+    gizmo.add(center);
+    gizmoHandles.push(center);
+    
+    scene.add(gizmo);
+}
+
+function createGizmoAxis(color, direction, length, thickness) {
+    const group = new THREE.Group();
+    
+    const lineGeo = new THREE.CylinderGeometry(thickness, thickness, length, 8);
+    const lineMat = new THREE.MeshBasicMaterial({ color: color });
+    const line = new THREE.Mesh(lineGeo, lineMat);
+    line.position.copy(direction.clone().multiplyScalar(length / 2));
+    line.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+    group.add(line);
+    
+    const coneGeo = new THREE.ConeGeometry(0.012, 0.03, 12);
+    const coneMat = new THREE.MeshBasicMaterial({ color: color });
+    const cone = new THREE.Mesh(coneGeo, coneMat);
+    cone.position.copy(direction.clone().multiplyScalar(length));
+    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+    group.add(cone);
+    
+    const handleGeo = new THREE.CylinderGeometry(0.02, 0.02, length * 1.2, 8);
+    const handleMat = new THREE.MeshBasicMaterial({ visible: false });
+    const handle = new THREE.Mesh(handleGeo, handleMat);
+    handle.position.copy(direction.clone().multiplyScalar(length / 2));
+    handle.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+    group.add(handle);
+    
+    return group;
+}
+
+function updateGizmoPosition() {
+    if (!gizmo.visible || !STATE.selected) return;
+    
+    if (STATE.mode === 'EDIT') {
+        if (STATE.selection.length > 0) {
+            const center = new THREE.Vector3();
+            STATE.selection.forEach(el => {
+                el.getWorldPosition(_tempVecA);
+                center.add(_tempVecA);
+            });
+            center.divideScalar(STATE.selection.length);
+            gizmo.position.copy(center);
+        } else if (STATE.closestVertex) {
+            STATE.closestVertex.getWorldPosition(_tempVecA);
+            gizmo.position.copy(_tempVecA);
+        }
+        
+        if (STATE.transform === 'LOCAL' && STATE.mainMesh) {
+            gizmo.quaternion.copy(STATE.mainMesh.quaternion);
+        } else {
+            gizmo.quaternion.identity();
+        }
+    } else if (STATE.mode === 'OBJECT' && STATE.selected) {
+        STATE.selected.getWorldPosition(_tempVecA);
+        gizmo.position.copy(_tempVecA);
+        
+        if (STATE.transform === 'LOCAL') {
+            gizmo.quaternion.copy(STATE.selected.quaternion);
+        } else {
+            gizmo.quaternion.identity();
+        }
+    }
+}
+
+function showGizmo(visible) {
+    gizmo.visible = visible && (STATE.tool === 'MOVE' || STATE.tool === 'ROTATE' || STATE.tool === 'SCALE');
+    if (visible) updateGizmoPosition();
+}
+
+// ==========================================
+// UI PANEL
+// ==========================================
+function createUIPanel() {
+    UI.panel = new THREE.Group();
+    UI.panel.visible = false;
+    
+    const width = 0.35;
+    const height = 0.50;
+    
+    const bgGeo = new THREE.PlaneGeometry(width, height);
+    const bgMat = new THREE.MeshBasicMaterial({ 
+        color: 0x1a1a1a, 
+        transparent: true, 
+        opacity: 0.95,
+        side: THREE.DoubleSide
+    });
+    const bg = new THREE.Mesh(bgGeo, bgMat);
+    UI.panel.add(bg);
+    
+    const borderGeo = new THREE.EdgesGeometry(bgGeo);
+    const borderMat = new THREE.LineBasicMaterial({ color: 0x2b7fdb, linewidth: 2 });
+    const border = new THREE.LineSegments(borderGeo, borderMat);
+    border.position.z = 0.001;
+    UI.panel.add(border);
+    
+    createMainMenu();
+    scene.add(UI.panel);
+}
+
+function createMainMenu() {
+    clearUIButtons();
+    const startY = 0.18;
+    const spacing = 0.065;
+    let y = startY;
+    
+    createMenuSection('MODOS', y); y -= 0.04;
+    createIconButton('🎯', 'OBJECT', -0.12, y, () => switchToMode('OBJECT'), STATE.mode === 'OBJECT');
+    createIconButton('✏️', 'EDIT', -0.04, y, () => switchToMode('EDIT'), STATE.mode === 'EDIT');
+    y -= spacing;
+    
+    createMenuSection('CREAR', y); y -= 0.04;
+    createIconButton('📦', 'Cubo', -0.12, y, () => spawnObject('box'));
+    createIconButton('⚪', 'Esfera', -0.04, y, () => spawnObject('sphere'));
+    createIconButton('🔵', 'Cilindro', 0.04, y, () => spawnObject('cylinder'));
+    createIconButton('🍩', 'Torus', 0.12, y, () => spawnObject('torus'));
+    y -= spacing;
+    
+    createMenuSection('VISUALIZACIÓN', y); y -= 0.04;
+    createIconButton('🎨', 'Solid', -0.12, y, () => setShading('SOLID'), STATE.shading === 'SOLID');
+    createIconButton('🔲', 'Wire', -0.04, y, () => setShading('WIREFRAME'), STATE.shading === 'WIREFRAME');
+    createIconButton('💎', 'Mat', 0.04, y, () => setShading('MATERIAL'), STATE.shading === 'MATERIAL');
+    y -= spacing;
+    
+    createMenuSection('HERRAMIENTAS', y); y -= 0.04;
+    createIconButton('👆', 'Select', -0.12, y, () => setTool('SELECT'), STATE.tool === 'SELECT');
+    createIconButton('↔️', 'Move', -0.04, y, () => setTool('MOVE'), STATE.tool === 'MOVE');
+    createIconButton('🔄', 'Rotate', 0.04, y, () => setTool('ROTATE'), STATE.tool === 'ROTATE');
+    createIconButton('↕️', 'Scale', 0.12, y, () => setTool('SCALE'), STATE.tool === 'SCALE');
+}
+
+function createEditMenu() {
+    clearUIButtons();
+    const startY = 0.18;
+    const spacing = 0.065;
+    let y = startY;
+    
+    createMenuSection('MODO EDICIÓN', y); y -= 0.04;
+    createIconButton('•', 'Vértice', -0.08, y, () => setEditMode('VERTEX'), STATE.editMode === 'VERTEX');
+    createIconButton('—', 'Arista', 0, y, () => setEditMode('EDGE'), STATE.editMode === 'EDGE');
+    createIconButton('▢', 'Cara', 0.08, y, () => setEditMode('FACE'), STATE.editMode === 'FACE');
+    y -= spacing;
+    
+    createMenuSection('OPERACIONES', y); y -= 0.04;
+    createIconButton('➕', 'Extruir', -0.12, y, extrudeSelection);
+    createIconButton('🔗', 'Merge', -0.04, y, mergeVertices);
+    createIconButton('🗑️', 'Delete', 0.04, y, deleteSelected);
+}
+
+function createMenuSection(title, y) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512; canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#0f0f0f'; ctx.fillRect(0, 0, 512, 64);
+    ctx.fillStyle = '#2b7fdb'; ctx.font = 'bold 32px Arial';
+    ctx.textAlign = 'left'; ctx.fillText(title, 10, 42);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    const geo = new THREE.PlaneGeometry(0.32, 0.03);
+    const mat = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(0, y, 0.003);
+    UI.panel.add(mesh);
+}
+
+function createIconButton(icon, label, x, y, callback, active = false) {
+    const size = 0.055;
+    const canvas = document.createElement('canvas');
+    canvas.width = 128; canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    
+    ctx.fillStyle = active ? '#2b7fdb' : '#2a2a2a';
+    ctx.fillRect(0, 0, 128, 128);
+    ctx.strokeStyle = active ? '#ffffff' : '#444444';
+    ctx.lineWidth = 3; ctx.strokeRect(0, 0, 128, 128);
+    
+    ctx.fillStyle = '#ffffff'; ctx.font = 'bold 48px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(icon, 64, 50);
+    ctx.font = 'bold 16px Arial'; ctx.fillText(label, 64, 100);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    const geo = new THREE.PlaneGeometry(size, size);
+    const mat = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
+    const btn = new THREE.Mesh(geo, mat);
+    btn.position.set(x, y, 0.003);
+    
+    btn.userData = { isButton: true, action: callback, label: label };
+    UI.panel.add(btn);
+    UI.buttons.push(btn);
+    return btn;
+}
+
+function clearUIButtons() {
+    UI.buttons.forEach(btn => UI.panel.remove(btn));
+    UI.buttons = [];
+}
+
+function toggleMenu() {
+    STATE.menuVisible = !STATE.menuVisible;
+    UI.panel.visible = STATE.menuVisible;
+    
+    if (STATE.menuVisible && gripLeft) {
+        // Posicionar menú frente al controlador izquierdo
+        UI.panel.position.set(0.12, 0, -0.15);
+        UI.panel.rotation.set(0, -Math.PI / 6, 0);
+        gripLeft.add(UI.panel);
+    } else {
+        // Ocultar
+        if(UI.panel.parent) UI.panel.parent.remove(UI.panel);
+        scene.add(UI.panel);
+        UI.panel.visible = false;
+    }
+}
+
+// ==========================================
+// VENTANA DE PROPIEDADES FLOTANTE
+// ==========================================
+function createPropertiesWindow() {
+    UI.propertiesWindow = new THREE.Group();
+    UI.propertiesWindow.visible = false;
+    
+    const bgGeo = new THREE.PlaneGeometry(0.25, 0.20);
+    const bgMat = new THREE.MeshBasicMaterial({ color: 0x0f0f0f, transparent: true, opacity: 0.95 });
+    const bg = new THREE.Mesh(bgGeo, bgMat);
+    UI.propertiesWindow.add(bg);
+    
+    const border = new THREE.LineSegments(new THREE.EdgesGeometry(bgGeo), new THREE.LineBasicMaterial({ color: 0xffa500 }));
+    border.position.z = 0.001;
+    UI.propertiesWindow.add(border);
+    scene.add(UI.propertiesWindow);
+}
+
+function updatePropertiesWindow() {
+    if (!STATE.selected || STATE.mode !== 'OBJECT') {
+        UI.propertiesWindow.visible = false;
+        return;
+    }
+    UI.propertiesWindow.visible = true;
+    STATE.selected.getWorldPosition(_tempVecA);
+    _tempVecA.y += 0.3;
+    UI.propertiesWindow.position.copy(_tempVecA);
+    UI.propertiesWindow.lookAt(camera.position);
+}
+
+// ==========================================
+// EVENTOS DE CONTROLADORES - MANO DERECHA
+// ==========================================
+function onRightTriggerStart() {
+    // UI Interaction
+    if (STATE.menuVisible && checkUIInteraction(ctrlRight)) return;
+    
+    // Gizmo Interaction
+    if (gizmo.visible && checkGizmoInteraction()) return;
+    
+    // Selection
+    if (STATE.mode === 'OBJECT') selectObjectRaycast(ctrlRight);
+    else if (STATE.mode === 'EDIT') {
+        if (STATE.editMode === 'VERTEX' && STATE.closestVertex) toggleSelection(STATE.closestVertex);
+        else if (STATE.editMode === 'EDGE' && STATE.closestEdge) toggleSelection(STATE.closestEdge);
+        else if (STATE.editMode === 'FACE' && STATE.closestFace) toggleSelection(STATE.closestFace);
+    }
+}
+
+function onRightTriggerEnd() {
+    STATE.grabbedGizmoAxis = null;
+}
+
+function onRightGripStart() {
+    // Agarrar objetos físicamente
+    if (STATE.mode === 'EDIT' && STATE.editMode === 'VERTEX' && STATE.closestVertex) {
+        STATE.grabbedElement = STATE.closestVertex;
+        gripRight.attach(STATE.grabbedElement);
+    } else if (STATE.mode === 'OBJECT' && STATE.selected) {
+        STATE.grabbedElement = STATE.selected;
+        gripRight.attach(STATE.grabbedElement);
+    }
+}
+
+function onRightGripEnd() {
+    if (STATE.grabbedElement) {
+        if (STATE.grabbedElement.userData.isVertex) {
+            const v = STATE.grabbedElement;
+            v.userData.parentMesh.attach(v);
+            updateVertexGeometry(v);
+        } else {
+            scene.attach(STATE.grabbedElement);
+        }
+        STATE.grabbedElement = null;
+    }
+}
+
+// ==========================================
+// EVENTOS DE CONTROLADORES - MANO IZQUIERDA (MEJORADA)
+// ==========================================
+function onLeftTriggerStart() {
+    // 1. Intentar interactuar con la UI primero
+    if (STATE.menuVisible && checkUIInteraction(ctrlLeft)) {
+        return;
+    }
+    
+    // 2. Si no hay interacción UI, abrir/cerrar menú
+    toggleMenu();
+}
+
+function onLeftGripStart() {
+    // Iniciar arrastre del mundo
+    worldDragState.active = true;
+    ctrlLeft.getWorldPosition(worldDragState.startPos);
+    dolly.position.copy(worldDragState.dollyStartPos);
+    updateLog("Moviendo mundo...");
+}
+
+function onLeftGripEnd() {
+    worldDragState.active = false;
+    // Guardar la nueva posición base del dolly
+    worldDragState.dollyStartPos.copy(dolly.position);
+    updateLog("Movimiento finalizado");
+}
+
+function updateWorldDrag() {
+    if (worldDragState.active && ctrlLeft) {
+        ctrlLeft.getWorldPosition(worldDragState.currentControllerPos);
+        
+        // Calcular delta del movimiento de la mano
+        const delta = new THREE.Vector3().subVectors(
+            worldDragState.currentControllerPos, 
+            worldDragState.startPos
+        );
+        
+        // Mover el Dolly en dirección opuesta al movimiento de la mano
+        // Si muevo la mano a la derecha, el mundo (dolly) debe ir a la derecha para que parezca que me arrastro a la izquierda
+        // Espera, la metáfora es "agarrar el aire". Si agarro y tiro hacia mí (Z+), el mundo viene hacia mí.
+        
+        // El movimiento debe ser: PosicionOriginalDolly + (PosicionActualMano - PosicionInicialMano)
+        // Pero como estamos moviendo el "mundo" con respecto a la cámara, movemos el dolly.
+        
+        // Estrategia más estable:
+        // Delta = CurrentHand - StartHand.
+        // DollyPos = DollyStart - Delta. (Mover el mundo en contra del movimiento de la mano da sensación de arrastre)
+        // Probemos DollyStart + Delta (Mover el mundo CON la mano).
+        
+        // Corrección técnica WebXR:
+        // Si muevo la mano hacia la izquierda, quiero traer el mundo hacia la izquierda.
+        
+        // Reiniciamos lógica de bucle para evitar acumulaciones:
+        // 1. Obtener movimiento relativo de la mano desde el inicio del grip.
+        const movement = new THREE.Vector3().subVectors(worldDragState.currentControllerPos, worldDragState.startPos);
+        
+        // 2. Aplicar al dolly base
+        dolly.position.copy(worldDragState.dollyStartPos).add(movement);
+    }
+}
+
+// ==========================================
+// LÓGICA COMÚN
+// ==========================================
+function checkUIInteraction(controller) {
+    if (!controller || UI.buttons.length === 0) return false;
+    
+    _mat.identity().extractRotation(controller.matrixWorld);
+    _ray.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+    _ray.ray.direction.set(0, 0, -1).applyMatrix4(_mat);
+    
+    const hits = _ray.intersectObjects(UI.buttons, false);
+    
+    if (hits.length > 0) {
+        const btn = hits[0].object;
+        if (btn.userData.action) {
+            btn.userData.action();
+            animateButtonPress(btn);
+            return true;
+        }
+    }
+    return false;
+}
+
+function animateButtonPress(btn) {
+    const originalZ = btn.position.z;
+    btn.position.z = 0.001;
+    setTimeout(() => { btn.position.z = originalZ; }, 100);
+}
+
+function checkGizmoInteraction() {
+    if (!ctrlRight) return false;
+    _mat.identity().extractRotation(ctrlRight.matrixWorld);
+    _ray.ray.origin.setFromMatrixPosition(ctrlRight.matrixWorld);
+    _ray.ray.direction.set(0, 0, -1).applyMatrix4(_mat);
+    
+    const hits = _ray.intersectObjects(gizmoHandles, true);
+    if (hits.length > 0) {
+        let parent = hits[0].object;
+        while (parent.parent && !parent.userData.axis) parent = parent.parent;
+        if (parent.userData.axis) {
+            STATE.grabbedGizmoAxis = parent.userData.axis;
+            return true;
+        }
+    }
+    return false;
+}
+
+// ==========================================
+// LOOP PRINCIPAL
+// ==========================================
+function render() {
+    // Actualizar movimiento del mundo (Locomoción mano izquierda)
+    updateWorldDrag();
+
+    if (ctrlRight) {
+        if (STATE.mode === 'EDIT' && STATE.mainMesh) {
+            if (STATE.editMode === 'VERTEX') checkVertexProximity();
+            else if (STATE.editMode === 'EDGE') checkEdgeProximity();
+            else if (STATE.editMode === 'FACE') checkFaceProximity();
+        }
+        
+        if (STATE.grabbedElement) {
+            if (STATE.grabbedElement.userData.isVertex) updateVertexGeometry(STATE.grabbedElement);
+        }
+        
+        if (STATE.grabbedGizmoAxis) applyGizmoTransform();
+    }
+    
+    updateGizmoPosition();
+    updatePropertiesWindow();
+    updateInfoDisplay();
+    
+    renderer.render(scene, camera);
+}
+
+function updateInfoDisplay() {
+    document.getElementById('mode-display').textContent = STATE.mode;
+    document.getElementById('tool-display').textContent = STATE.tool;
+    document.getElementById('shading-display').textContent = STATE.shading;
+    
+    let selText = 'Ninguna';
+    if (STATE.selection.length > 0) selText = `${STATE.selection.length} elementos`;
+    else if (STATE.selected) selText = STATE.selected.name || 'Objeto';
+    document.getElementById('sel-display').textContent = selText;
+}
+
+// ==========================================
+// FUNCIONES DE MODELADO Y UTILIDADES
+// ==========================================
+function spawnObject(type) {
+    let geo;
+    if(type === 'box') geo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+    else if(type === 'sphere') geo = new THREE.SphereGeometry(0.12, 24, 16);
+    else if(type === 'cylinder') geo = new THREE.CylinderGeometry(0.08, 0.08, 0.25, 24);
+    else geo = new THREE.TorusGeometry(0.1, 0.04, 16, 32);
+    
+    const mat = new THREE.MeshStandardMaterial({ color: Math.random() * 0xffffff, roughness: 0.5, metalness: 0.2 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = `${type}_${objects.length}`;
+    
+    // Spawn frente al dolly
+    const camPos = new THREE.Vector3();
+    const camQuat = new THREE.Quaternion();
+    camera.getWorldPosition(camPos);
+    camera.getWorldQuaternion(camQuat);
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camQuat);
+    mesh.position.copy(camPos).add(forward.multiplyScalar(0.6));
+    
+    scene.add(mesh);
+    objects.push(mesh);
+    selectObject(mesh);
+}
+
+function selectObject(obj) {
+    if (STATE.selected === obj) return;
+    if (STATE.selected) STATE.selected.material.emissive.setHex(0x000000);
+    STATE.selected = obj;
+    if (obj) {
+        obj.material.emissive.setHex(STATE.colors.selected);
+        STATE.mainMesh = obj;
+        showGizmo(STATE.tool !== 'SELECT');
+    } else {
+        STATE.mainMesh = null;
+        showGizmo(false);
+    }
+}
+
+function selectObjectRaycast(controller) {
+    if (!controller) return;
+    _mat.identity().extractRotation(controller.matrixWorld);
+    _ray.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+    _ray.ray.direction.set(0, 0, -1).applyMatrix4(_mat);
+    const hits = _ray.intersectObjects(objects, false);
+    selectObject(hits.length > 0 ? hits[0].object : null);
+}
+
+function toggleSelection(element) {
+    const idx = STATE.selection.indexOf(element);
+    if (idx > -1) {
+        STATE.selection.splice(idx, 1);
+        element.material.color.setHex(STATE.colors[STATE.editMode.toLowerCase()]);
+    } else {
+        STATE.selection.push(element);
+        element.material.color.setHex(STATE.colors.highlight);
+    }
+}
+
+function switchToMode(mode) {
+    if (STATE.mode === mode) return;
+    if (STATE.mode === 'EDIT') exitEditMode();
+    STATE.mode = mode;
+    clearSelection();
+    
+    if (mode === 'EDIT') {
+        if (STATE.selected && objects.includes(STATE.selected)) {
+            STATE.mainMesh = STATE.selected;
+            enterEditMode();
+            createEditMenu();
+        } else {
+            STATE.mode = 'OBJECT';
+            updateLog('Selecciona objeto primero');
+        }
+    } else {
+        createMainMenu();
+    }
+}
+
+function enterEditMode() {
+    if (!STATE.mainMesh) return;
+    applyEditModeShading();
+    setEditMode(STATE.editMode);
+}
+
+function exitEditMode() {
+    clearAllHelpers();
+    restoreOriginalShading();
+    STATE.mainMesh = null;
+}
+
+function setEditMode(mode) {
+    clearAllHelpers();
+    STATE.editMode = mode;
+    if (mode === 'VERTEX') createVertexHelpers();
+    else if (mode === 'EDGE') createEdgeHelpers();
+    else if (mode === 'FACE') createFaceHelpers();
+}
+
+function clearSelection() { STATE.selection = []; }
+
+// Helper creators (Simplified for brevity, ensuring visuals work)
+function createVertexHelpers() {
+    const mesh = STATE.mainMesh;
+    const posAttr = mesh.geometry.attributes.position;
+    for (let i = 0; i < posAttr.count; i++) {
+        const v = new THREE.Vector3().fromBufferAttribute(posAttr, i);
+        const geo = new THREE.SphereGeometry(0.012, 8, 8);
+        const mat = new THREE.MeshBasicMaterial({ color: STATE.colors.vertex });
+        const helper = new THREE.Mesh(geo, mat);
+        helper.position.copy(v);
+        helper.userData = { isVertex: true, indices: [i], parentMesh: mesh };
+        mesh.add(helper);
+        STATE.vertexHelpers.push(helper);
+    }
+}
+
+function createEdgeHelpers() { /* Implementación simplificada si necesaria */ }
+function createFaceHelpers() { /* Implementación simplificada si necesaria */ }
+
+function updateVertexGeometry(vertex) {
+    const mesh = vertex.userData.parentMesh;
+    const posAttr = mesh.geometry.attributes.position;
+    const idx = vertex.userData.indices[0];
+    posAttr.setXYZ(idx, vertex.position.x, vertex.position.y, vertex.position.z);
+    posAttr.needsUpdate = true;
+    mesh.geometry.computeVertexNormals();
+}
+
+function applyEditModeShading() {
+    STATE.mainMesh.material.wireframe = false;
+    STATE.mainMesh.material.transparent = true;
+    STATE.mainMesh.material.opacity = 0.7;
+    STATE.mainMesh.material.needsUpdate = true;
+}
+
+function restoreOriginalShading() {
+    if(!STATE.mainMesh) return;
+    STATE.mainMesh.material.transparent = false;
+    STATE.mainMesh.material.opacity = 1.0;
+    setShading(STATE.shading);
+}
+
+function setShading(mode) {
+    STATE.shading = mode;
+    objects.forEach(obj => {
+        obj.material.wireframe = (mode === 'WIREFRAME');
+        obj.material.needsUpdate = true;
+    });
+}
+
+function setTool(tool) {
+    STATE.tool = tool;
+    showGizmo(tool !== 'SELECT');
+}
+
+function applyGizmoTransform() {
+    if (!STATE.grabbedGizmoAxis || !ctrlRight) return;
+    ctrlRight.getWorldPosition(_tempVecA);
+    
+    // Lógica simple de movimiento
+    if (STATE.tool === 'MOVE') {
+        const offset = _tempVecA.clone().sub(gizmo.position).multiplyScalar(0.05);
+        if (STATE.selected) STATE.selected.position.add(offset);
+    }
+}
+
+// Funciones placeholder para botones
+function extrudeSelection() { updateLog("Extrusión..."); }
+function mergeVertices() { updateLog("Merge..."); }
+function deleteSelected() { 
+    if(STATE.selected) { scene.remove(STATE.selected); STATE.selected=null; showGizmo(false); } 
+}
+
+function clearAllHelpers() {
+    STATE.vertexHelpers.forEach(h => h.parent.remove(h));
+    STATE.vertexHelpers = [];
+    // Limpiar edges y faces si se implementan completamente
+}
+
+// Visual Check Proximity
+function checkVertexProximity() {
+    if (!selectorSphereRight) return;
+    selectorSphereRight.getWorldPosition(_tempVecA);
+    let minDist = 0.08, closest = null;
+    
+    STATE.vertexHelpers.forEach(v => {
+        v.getWorldPosition(_tempVecB);
+        const d = _tempVecA.distanceTo(_tempVecB);
+        if(d < minDist) { minDist = d; closest = v; }
+    });
+    
+    if (closest !== STATE.closestVertex) {
+        if (STATE.closestVertex) STATE.closestVertex.scale.set(1,1,1);
+        STATE.closestVertex = closest;
+        if (closest) closest.scale.set(1.5,1.5,1.5);
+    }
+}
+function checkEdgeProximity() {}
+function checkFaceProximity() {}
+
+function updateLog(msg) {
+    document.getElementById('status-bar').textContent = msg;
+    console.log(msg);
+}
+
+</script>
+</body>
+</html>
