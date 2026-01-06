@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MR Studio: Solid Vertices</title>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; font-family: sans-serif; color: #fff; }
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            background: rgba(0,0,0,0.9); z-index: 999;
+        }
+        button {
+            padding: 20px 60px; font-size: 22px; background: #0088ff; border: none;
+            border-radius: 12px; font-weight: bold; cursor: pointer; color: white;
+            box-shadow: 0 0 20px rgba(0,136,255,0.5);
+        }
+        .instr { margin-top: 20px; color: #aaa; font-size: 14px; text-align: center; }
+    </style>
+</head>
+<body>
+
+<div id="overlay">
+    <h1>MR STUDIO: SOLID VERTICES</h1>
+    <p>Corrección: Las esquinas ahora son sólidas e indivisibles.</p>
+    <button id="btn-start">INICIAR</button>
+</div>
+
+<script type="importmap">
+{
+    "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+
+// ==========================================
+// 1. MOTOR
+// ==========================================
+let scene, camera, renderer;
+let ctrlRight, gripLeft;
+let uiGroup; 
+const uiButtons = []; 
+const objects = []; 
+
+// Variables Interacción
+let selectorSphere;
+const SELECTOR_RADIUS = 0.05; 
+
+// Variables reutilizables
+const _tempVecA = new THREE.Vector3();
+const _tempVecB = new THREE.Vector3();
+const _ray = new THREE.Raycaster();
+const _mat = new THREE.Matrix4();
+
+// ESTADO
+const STATE = {
+    hoveredBtn: null,
+    selected: null,      
+    mainMesh: null,      
+    mode: 'OBJECT',      
+    grabbedElement: null, 
+    menuAttached: false,
+    closestVertex: null
+};
+
+init();
+
+function init() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x111111);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 2);
+    dirLight.position.set(3, 10, 3);
+    scene.add(dirLight);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    scene.add(new THREE.GridHelper(10, 10, 0x333333, 0x111111));
+
+    camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 50);
+    camera.position.set(0, 1.6, 0);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    setupControllers();
+    createWristUI();
+
+    document.getElementById('btn-start').addEventListener('click', () => {
+        navigator.xr.requestSession('immersive-ar', { 
+            optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] 
+        }).then(session => {
+            renderer.xr.setSession(session);
+            document.getElementById('overlay').style.display = 'none';
+            scene.background = null; 
+        });
+    });
+
+    renderer.setAnimationLoop(render);
+}
+
+// ==========================================
+// 2. CONTROLADORES
+// ==========================================
+function setupControllers() {
+    const modelFactory = new XRControllerModelFactory();
+
+    // DERECHA
+    const c0 = renderer.xr.getController(0);
+    const c1 = renderer.xr.getController(1);
+
+    const onConnected = (e) => {
+        if (e.data.handedness === 'right') {
+            ctrlRight = e.target;
+            
+            // ESFERA ROJA (Puntero Táctil)
+            const geo = new THREE.SphereGeometry(0.008, 16, 16); 
+            const mat = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.6 });
+            selectorSphere = new THREE.Mesh(geo, mat);
+            selectorSphere.position.set(0, -0.01, -0.04); 
+            ctrlRight.add(selectorSphere);
+
+            // Rayo UI
+            const line = new THREE.Line(
+                new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)]),
+                new THREE.LineBasicMaterial({ color: 0x0088ff, opacity: 0.2, transparent: true })
+            );
+            ctrlRight.add(line);
+
+            ctrlRight.addEventListener('selectstart', onTriggerStart); 
+            ctrlRight.addEventListener('squeezestart', onGripStart);   
+            ctrlRight.addEventListener('squeezeend', onGripEnd);       
+        }
+    };
+    c0.addEventListener('connected', onConnected);
+    c1.addEventListener('connected', onConnected);
+    scene.add(c0);
+    scene.add(c1);
+
+    // IZQUIERDA
+    gripLeft = renderer.xr.getControllerGrip(0);
+    gripLeft.add(modelFactory.createControllerModel(gripLeft));
+    scene.add(gripLeft);
+    
+    const gripRight = renderer.xr.getControllerGrip(1);
+    gripRight.add(modelFactory.createControllerModel(gripRight));
+    scene.add(gripRight);
+}
+
+// ==========================================
+// 3. UI
+// ==========================================
+function createWristUI() {
+    uiGroup = new THREE.Group();
+    uiGroup.position.set(0.05, 0.05, -0.05);
+    uiGroup.rotation.set(-Math.PI/2, 0, Math.PI/2);
+
+    const bg = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.22), new THREE.MeshBasicMaterial({ color: 0x000000, opacity: 0.8, transparent: true }));
+    uiGroup.add(bg);
+
+    createBtn('CUBO', 0x0055ff, -0.04, 0.08, () => spawn('box'));
+    createBtn('ESFERA', 0x00aa55, 0.04, 0.08, () => spawn('sphere'));
+    
+    createBtn('OBJ / VERT', 0xaa00aa, 0.0, 0.02, toggleMode);
+    
+    createBtn('BORRAR', 0xff0000, 0, -0.06, deleteSelected);
+}
+
+function createBtn(text, color, x, y, cb) {
+    const btn = new THREE.Mesh(new THREE.PlaneGeometry(0.06, 0.04), new THREE.MeshBasicMaterial({ color: color }));
+    btn.position.set(x, y, 0.01);
+    const cvs = document.createElement('canvas'); cvs.width=128; cvs.height=64;
+    const ctx = cvs.getContext('2d');
+    ctx.fillStyle = '#' + new THREE.Color(color).getHexString(); ctx.fillRect(0,0,128,64);
+    ctx.fillStyle = 'white'; ctx.font = 'bold 24px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(text, 64, 32);
+    const tex = new THREE.CanvasTexture(cvs);
+    const label = new THREE.Mesh(new THREE.PlaneGeometry(0.06, 0.04), new THREE.MeshBasicMaterial({map:tex, transparent:true}));
+    label.position.z = 0.002;
+    btn.add(label);
+    btn.userData = { isButton: true, action: cb, baseColor: new THREE.Color(color) };
+    uiGroup.add(btn);
+    uiButtons.push(btn);
+}
+
+// ==========================================
+// 4. LÓGICA DE INTERACCIÓN
+// ==========================================
+
+function onTriggerStart() {
+    if (STATE.hoveredBtn) {
+        STATE.hoveredBtn.userData.action();
+        const b = STATE.hoveredBtn;
+        b.scale.set(0.9,0.9,1); setTimeout(()=>b.scale.set(1,1,1),100);
+    } else if (STATE.mode === 'OBJECT') {
+        checkRaycastSelection();
+    }
+}
+
+function onGripStart() {
+    // 1. Agarrar VÉRTICE (Touch)
+    if (STATE.mode === 'VERTEX' && STATE.closestVertex) {
+        STATE.grabbedElement = STATE.closestVertex;
+        ctrlRight.attach(STATE.grabbedElement); // Pegar a la mano
+        STATE.grabbedElement.material.color.setHex(0xffffff); // Blanco
+        return;
+    }
+
+    // 2. Agarrar OBJETO
+    if (STATE.mode === 'OBJECT' && STATE.selected && !STATE.selected.userData.isVertex) {
+        STATE.grabbedElement = STATE.selected;
+        ctrlRight.attach(STATE.grabbedElement);
+        STATE.grabbedElement.material.emissive.setHex(0x555555);
+    }
+}
+
+function onGripEnd() {
+    if (STATE.grabbedElement) {
+        // A. Soltar VÉRTICE
+        if (STATE.grabbedElement.userData.isVertex) {
+            const dot = STATE.grabbedElement;
+            const mesh = dot.userData.parentMesh;
+            
+            // Volver a pegar el punto al mesh
+            mesh.attach(dot);
+            
+            // Actualizar geometría sólida
+            updateSolidVertex(dot);
+            
+            dot.material.color.setHex(0xffff00); 
+        } 
+        // B. Soltar OBJETO
+        else {
+            scene.attach(STATE.grabbedElement);
+            STATE.grabbedElement.material.emissive.setHex(0x000000);
+        }
+        
+        STATE.grabbedElement = null;
+    }
+}
+
+function render() {
+    if (!STATE.menuAttached && gripLeft) {
+        gripLeft.add(uiGroup);
+        STATE.menuAttached = true;
+    }
+
+    if (ctrlRight) {
+        // UI
+        _mat.identity().extractRotation(ctrlRight.matrixWorld);
+        _ray.ray.origin.setFromMatrixPosition(ctrlRight.matrixWorld);
+        _ray.ray.direction.set(0, 0, -1).applyMatrix4(_mat);
+
+        const uiHits = _ray.intersectObjects(uiButtons, false);
+        if (uiHits.length > 0) STATE.hoveredBtn = uiHits[0].object;
+        else STATE.hoveredBtn = null;
+
+        // Proximidad de vértices
+        checkProximitySelection();
+        
+        // Si estamos arrastrando
+        if (STATE.grabbedElement && STATE.grabbedElement.userData.isVertex) {
+            updateSolidVertex(STATE.grabbedElement);
+        }
+    }
+
+    renderer.render(scene, camera);
+}
+
+// ==========================================
+// 5. LÓGICA DE VÉRTICES SÓLIDOS (SOLUCIÓN)
+// ==========================================
+
+function spawn(type) {
+    const geo = (type==='box') ? new THREE.BoxGeometry(0.2,0.2,0.2) : new THREE.SphereGeometry(0.15,16,12);
+    // Flat shading para ver los polígonos
+    const mat = new THREE.MeshStandardMaterial({ color: Math.random()*0xffffff, roughness: 0.4, flatShading: true }); 
+    const mesh = new THREE.Mesh(geo, mat);
+    
+    const camPos = new THREE.Vector3();
+    const camQuat = new THREE.Quaternion();
+    camera.matrixWorld.decompose(camPos, camQuat, new THREE.Vector3());
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camQuat);
+    const spawnPos = camPos.add(forward.multiplyScalar(0.5));
+    
+    mesh.position.copy(spawnPos);
+    mesh.lookAt(camera.position); 
+    
+    scene.add(mesh);
+    objects.push(mesh);
+    
+    if(STATE.mode === 'VERTEX') toggleMode();
+    select(mesh);
+}
+
+// *** MAGIA: CREAR UN SOLO MANEJADOR POR POSICIÓN ***
+function createUniqueVertexHelpers(mesh) {
+    const posAttr = mesh.geometry.attributes.position;
+    const geo = new THREE.BoxGeometry(0.015, 0.015, 0.015);
+    const baseMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+    
+    // Mapa: "x_y_z" -> [index1, index2, index3]
+    const uniquePositions = {};
+
+    // 1. Agrupar vértices por posición
+    for(let i=0; i<posAttr.count; i++) {
+        const x = posAttr.getX(i);
+        const y = posAttr.getY(i);
+        const z = posAttr.getZ(i);
+        
+        // Clave única basada en posición (con precisión de 4 decimales)
+        const key = `${x.toFixed(4)}_${y.toFixed(4)}_${z.toFixed(4)}`;
+        
+        if (!uniquePositions[key]) uniquePositions[key] = [];
+        uniquePositions[key].push(i);
+    }
+
+    // 2. Crear UN SOLO punto verde por clave
+    for (const key in uniquePositions) {
+        const indices = uniquePositions[key];
+        
+        // Usamos la posición del primer índice como referencia
+        const idx0 = indices[0];
+        const v = new THREE.Vector3().fromBufferAttribute(posAttr, idx0);
+        
+        const dot = new THREE.Mesh(geo, baseMat.clone());
+        dot.position.copy(v);
+        
+        // Guardamos TODOS los índices vinculados a este punto
+        dot.userData = { 
+            isVertex: true, 
+            indices: indices, // Array de índices reales 
+            parentMesh: mesh 
+        };
+        
+        mesh.add(dot);
+    }
+}
+
+// Mueve TODOS los vértices vinculados a este manejador
+function updateSolidVertex(dot) {
+    const mesh = dot.userData.parentMesh;
+    const posAttr = mesh.geometry.attributes.position;
+    const indices = dot.userData.indices; // Array de indices (e.g. [0, 4, 12])
+    
+    // Nueva posición (local) del manejador
+    const newPos = dot.position;
+
+    // Aplicar a todos los "gemelos"
+    indices.forEach(idx => {
+        posAttr.setXYZ(idx, newPos.x, newPos.y, newPos.z);
+    });
+
+    posAttr.needsUpdate = true;
+    mesh.geometry.computeBoundingSphere();
+    // Opcional: mesh.geometry.computeVertexNormals(); // Si quieres shading suave dinámico
+}
+
+// ==========================================
+// 6. UTILIDADES
+// ==========================================
+
+function checkRaycastSelection() {
+    const hits = _ray.intersectObjects(objects, false);
+    if (hits.length > 0) select(hits[0].object);
+    else select(null);
+}
+
+function select(obj) {
+    if (STATE.selected === obj) return;
+    if (STATE.selected) {
+        if(STATE.selected.userData.isVertex) STATE.selected.material.color.setHex(0x00ff00);
+        else STATE.selected.material.emissive.setHex(0x000000);
+    }
+    STATE.selected = obj;
+    if (obj) {
+        if (obj.userData.isVertex) obj.material.color.setHex(0xffff00);
+        else obj.material.emissive.setHex(0x333333);
+    }
+}
+
+function checkProximitySelection() {
+    if (STATE.mode !== 'VERTEX' || !STATE.mainMesh || !selectorSphere) return;
+    if (STATE.grabbedElement) return;
+
+    selectorSphere.getWorldPosition(_tempVecA);
+    let minDist = SELECTOR_RADIUS;
+    let closest = null;
+
+    // Buscar entre los manejadores únicos
+    for (let child of STATE.mainMesh.children) {
+        if (!child.userData.isVertex) continue;
+        child.getWorldPosition(_tempVecB);
+        const dist = _tempVecA.distanceTo(_tempVecB);
+        if (dist < minDist) { minDist = dist; closest = child; }
+    }
+
+    if (closest !== STATE.closestVertex) {
+        if (STATE.closestVertex) {
+            STATE.closestVertex.material.color.setHex(0x00ff00);
+            STATE.closestVertex.scale.set(1,1,1);
+        }
+        if (closest) {
+            closest.material.color.setHex(0xffff00);
+            closest.scale.set(1.5, 1.5, 1.5);
+        }
+        STATE.closestVertex = closest;
+    }
+}
+
+function toggleMode() {
+    const target = (STATE.selected && STATE.selected.userData.isVertex) ? STATE.selected.userData.parentMesh : (STATE.selected || STATE.mainMesh);
+    if (!target) return;
+
+    if (STATE.mode === 'OBJECT') {
+        STATE.mode = 'VERTEX';
+        STATE.mainMesh = target;
+        target.material.wireframe = true;
+        // Usar la nueva función de helpers únicos
+        createUniqueVertexHelpers(target); 
+        select(null);
+    } else {
+        STATE.mode = 'OBJECT';
+        if(STATE.mainMesh) {
+            STATE.mainMesh.material.wireframe = false;
+            clearVertexHelpers(STATE.mainMesh);
+            select(STATE.mainMesh);
+        }
+    }
+}
+
+function clearVertexHelpers(mesh) {
+    for(let i = mesh.children.length - 1; i >= 0; i--) {
+        if(mesh.children[i].userData.isVertex) {
+            mesh.remove(mesh.children[i]);
+        }
+    }
+}
+
+function deleteSelected() {
+    if (STATE.selected && !STATE.selected.userData.isVertex) {
+        scene.remove(STATE.selected);
+        const i = objects.indexOf(STATE.selected);
+        if(i>-1) objects.splice(i,1);
+        STATE.selected = null;
+        STATE.mainMesh = null;
+    }
+}
+
+</script>
+</body>
+</html>
